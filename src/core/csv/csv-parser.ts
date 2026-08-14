@@ -1,5 +1,20 @@
 import { readFileSync, writeFileSync } from 'fs'
 
+const knownHeaders: Record<string, string> = {
+    Buchungstag: 'date',
+    Wertstellung: 'date_executed',
+    Umsatzart: 'transaction_type',
+    Buchungstext: 'text',
+    Betrag: 'amount',
+    Währung: 'currency',
+    'IBAN Kontoinhaber': 'bank_number_owner',
+    Kategorie: 'category',
+    Sender: 'sender',
+    Empfänger: 'recipient',
+    Empfaenger: 'recipient',
+    Verwendungszweck: 'purpose',
+}
+
 /**
  * CsvParser is a generic CSV utility for reading, parsing,
  * and optionally remapping headers of CSV files.
@@ -38,7 +53,9 @@ export class CsvParser {
         const rows = readFileSync(fileName, 'utf-8').split(/\r?\n/)
         if (!rows.length) return []
 
-        const headers = rows[0].split(';').map((h) => h.trim())
+        const headers = rows[0]
+            .split(';')
+            .map((h) => this.normalizeHeader(h))
 
         return rows
             .slice(1)
@@ -84,7 +101,12 @@ export class CsvParser {
         return (
             Object.entries(columnMapping).find(
                 ([, mapped]) => mapped?.trim() === trimmed
-            )?.[0] ?? header
+            )?.[0] ?? this.normalizeHeader(header)
         )
+    }
+
+    private normalizeHeader(header: string): string {
+        return knownHeaders[header.replace(/^\uFEFF/, '').trim()] ??
+            header.replace(/^\uFEFF/, '').trim()
     }
 }

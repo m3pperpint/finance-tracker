@@ -55,4 +55,19 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
-**/2025.csv
+# Financial exports and spreadsheet formats: never commit imported data.
+# Keep the two sanitized fixtures below as the only allowed examples.
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.ods
+*.ofx
+*.qif
+
+# The app's upload folder may contain real bank exports in any format.
+data/uploads/*
+!/data/uploads/csv/
+!/data/uploads/csv/bank_statements.csv
+!/data/uploads/csv/bank_statementsWrongHeader.csv
+data/finance-rules.json

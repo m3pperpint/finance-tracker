@@ -1,0 +1,160 @@
+@import "tailwindcss";
+
+:root {
+    --background: oklch(0.98 0.01 245);
+    --foreground: oklch(0.22 0.03 255);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.22 0.03 255);
+    --primary: oklch(0.57 0.19 258);
+    --primary-foreground: oklch(0.99 0.01 250);
+    --muted: oklch(0.95 0.02 245);
+    --muted-foreground: oklch(0.5 0.04 255);
+    --border: oklch(0.9 0.025 250);
+    --ring: oklch(0.7 0.14 258);
+    --success: oklch(0.62 0.16 157);
+    --danger: oklch(0.62 0.2 25);
+}
+
+@theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-border: var(--border);
+    --color-ring: var(--ring);
+    --color-success: var(--success);
+    --color-danger: var(--danger);
+    --font-sans: "Inter", "Segoe UI", sans-serif;
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+
+    body {
+        @apply bg-background text-foreground font-sans antialiased;
+        min-width: 320px;
+    }
+}
+
+@keyframes float-in {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-float-in {
+    animation: float-in 500ms ease-out both;
+}
+
+.tab {
+    @apply inline-flex min-w-max items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-500 transition hover:bg-white hover:text-slate-950;
+}
+
+.active-tab {
+    @apply bg-slate-950 text-white shadow-sm hover:bg-slate-950 hover:text-white;
+}
+
+.active-mode {
+    @apply bg-white text-slate-950 shadow-sm;
+}
+
+.tab-count {
+    @apply rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500;
+}
+
+.active-tab .tab-count {
+    @apply bg-white/15 text-white;
+}
+
+.danger-count { @apply bg-red-100 text-red-700; }
+.icon-tile { @apply inline-flex rounded-xl p-2.5; }
+.icon-button { @apply inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-30; }
+.danger-hover:hover { @apply bg-red-50 text-red-600; }
+.label { @apply text-xs font-bold uppercase tracking-wider text-slate-400; }
+.hint { @apply mt-1 text-xs leading-5 text-slate-500; }
+.metric { @apply mt-1 text-3xl font-semibold tracking-tight text-slate-950; }
+.metric-muted { @apply text-xl text-slate-400; }
+.section-title { @apply text-base font-semibold text-slate-950; }
+.page-title { @apply text-3xl font-semibold tracking-tight text-slate-950; }
+.page-subtitle { @apply mt-1 max-w-3xl text-sm leading-6 text-slate-500; }
+.field { @apply h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-ring/20; }
+.progress { @apply h-2 overflow-hidden rounded-full bg-slate-100; }
+.progress span { @apply block h-full rounded-full bg-primary transition-all duration-500; }
+.review-mini { @apply flex w-full items-center justify-between gap-3 rounded-xl border border-slate-100 p-3 text-left transition hover:border-indigo-200 hover:bg-indigo-50/50; }
+.category-column { @apply rounded-2xl border border-slate-200/80 bg-white/70 p-4 transition; }
+.category-column:focus, .category-column:hover { @apply border-indigo-200 bg-white; }
+.category-column.necessity { @apply shadow-sm shadow-emerald-100; }
+.category-column.convenience { @apply shadow-sm shadow-violet-100; }
+.dot { @apply h-2.5 w-2.5 rounded-full; }
+.dot.emerald { @apply bg-emerald-500; }
+.dot.violet { @apply bg-violet-500; }
+.count-pill { @apply rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-500; }
+.category-card { @apply cursor-grab rounded-xl border border-slate-100 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-md active:cursor-grabbing; }
+.empty-drop { @apply rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400; }
+.monthly-chart { @apply flex h-56 items-end gap-2 overflow-x-auto pt-8; }
+.chart-bar { @apply relative flex h-full min-w-12 flex-1 flex-col items-center justify-end gap-2 rounded-lg px-1 pt-2 text-xs text-slate-400 transition hover:bg-indigo-50/60; }
+.chart-value { @apply absolute top-0 whitespace-nowrap text-[10px] font-semibold text-slate-400 opacity-0 transition; }
+.chart-track { @apply flex h-full w-full items-end rounded-md bg-slate-100/70; }
+.chart-fill { height: var(--bar-height); @apply block w-full rounded-md bg-indigo-200 transition-all duration-300; }
+.chart-bar:hover .chart-value { @apply opacity-100; }
+.chart-bar:hover .chart-fill { @apply bg-indigo-400; }
+.chart-bar-selected { @apply bg-indigo-50 text-indigo-700; }
+.chart-bar-selected .chart-fill { @apply bg-primary; }
+.chart-bar-selected .chart-value { @apply opacity-100 text-indigo-700; }
+.chart-label { @apply whitespace-nowrap text-[10px] font-semibold; }
+.necessity-chart { @apply flex h-56 items-end gap-2 overflow-x-auto pt-8; }
+.necessity-bar { @apply relative flex h-full min-w-12 flex-1 flex-col items-center justify-end gap-2 rounded-lg px-1 pt-2 text-xs text-slate-400 transition hover:bg-indigo-50/60; }
+.necessity-value { @apply absolute top-0 whitespace-nowrap text-[10px] font-semibold text-slate-400 opacity-0 transition; }
+.necessity-track { @apply flex w-full flex-col justify-end overflow-hidden rounded-md bg-slate-100/70 transition-all duration-300; }
+.necessity-segment { @apply block w-full; }
+.necessity-segment.necessity { @apply bg-emerald-300; }
+.necessity-segment.convenience { @apply bg-violet-300; }
+.necessity-segment.unclassified { @apply bg-slate-300; }
+.necessity-bar:hover .necessity-value { @apply opacity-100; }
+.necessity-bar:hover .necessity-segment.necessity { @apply bg-emerald-400; }
+.necessity-bar:hover .necessity-segment.convenience { @apply bg-violet-400; }
+.necessity-bar.chart-bar-selected .necessity-value { @apply opacity-100 text-indigo-700; }
+.necessity-bar.chart-bar-selected .necessity-segment.necessity { @apply bg-emerald-500; }
+.necessity-bar.chart-bar-selected .necessity-segment.convenience { @apply bg-violet-500; }
+.trend-stat { @apply flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 text-xs; }
+.trend-stat span { @apply text-slate-500; }
+.trend-stat strong { @apply text-sm font-semibold text-slate-950; }
+.filter-chip { @apply inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500 transition hover:border-indigo-200 hover:text-slate-950; }
+.filter-chip span { @apply rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-400; }
+.active-filter { @apply border-indigo-200 bg-indigo-50 text-indigo-700; }
+.active-filter span { @apply bg-white text-indigo-600; }
+.statement-row summary::-webkit-details-marker { display: none; }
+.statement-row summary:hover { @apply bg-slate-50/80; }
+.status-dot { @apply h-2.5 w-2.5 shrink-0 rounded-full; }
+.status-dot.matched { @apply bg-emerald-500; }
+.status-dot.unmatched { @apply bg-amber-500; }
+.status-dot.conflict { @apply bg-red-500; }
+
+/* Search controls keep their icon in a dedicated visual gutter. */
+.field.pl-9 { padding-left: 2.5rem; }
+
+.alias-group-card { @apply transition duration-200 hover:-translate-y-0.5 hover:shadow-md; }
+.count-pill { @apply inline-flex h-8 min-w-8 items-center justify-center rounded-full bg-indigo-50 px-2 text-xs font-bold text-indigo-700; }
+.alias-chip-row { @apply flex items-center gap-1.5; }
+.alias-chip { @apply flex min-w-0 flex-1 items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5 text-left text-sm text-slate-800 transition hover:border-indigo-200 hover:bg-indigo-50/50; }
+.alias-chip-meta { @apply shrink-0 text-[11px] font-semibold text-slate-400; }
+.alias-edit-panel { @apply mt-2 grid min-w-0 gap-2 rounded-xl bg-slate-50 p-3 sm:grid-cols-2; }
+.alias-edit-panel > :first-child { @apply min-w-0 sm:col-span-2; }
+.alias-edit-panel .field { @apply min-w-0 w-full; }
+.alias-edit-panel > button { @apply w-full sm:justify-self-end; }
+.load-more-link { @apply flex w-full items-center justify-center gap-1 rounded-xl px-3 py-2 text-xs font-bold text-primary transition hover:bg-indigo-50; }
+.statement-match { @apply inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm; }
+.match-alias, .match-category { @apply inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold transition; }
+.match-alias { @apply text-slate-700 hover:bg-slate-100; }
+.match-category { @apply bg-indigo-50 text-indigo-700 hover:bg-indigo-100; }
