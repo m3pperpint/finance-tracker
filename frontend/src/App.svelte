@@ -8,6 +8,8 @@
         CalendarClock,
         Check,
         ChevronDown,
+        ChevronLeft,
+        ChevronRight,
         FileSpreadsheet,
         Filter,
         FolderKanban,
@@ -33,6 +35,7 @@
 
     type Page = 'dashboard' | 'spending' | 'recurring' | 'statements' | 'aliases' | 'categories' | 'review'
     const pageRoutes: Page[] = ['dashboard', 'spending', 'recurring', 'review', 'aliases', 'categories', 'statements']
+    const CHART_MONTHS = 12
     type Necessity = 'necessity' | 'convenience'
     type AliasSort = 'usage-desc' | 'usage-asc' | 'name-asc' | 'name-desc'
     type AliasUsageFilter = 'all' | 'used' | 'unused'
@@ -113,6 +116,7 @@
     let comparisonCategory = ''
     let selectedSpendingCategory = ''
     let overallMonthKey = ''
+    let chartWindowOffset = 0
     let statementSearch = ''
     let statementFilter: 'all' | 'matched' | 'unmatched' | 'conflict' = 'all'
     let statementTypeFilter = 'all'
@@ -171,13 +175,17 @@
     $: if (overallMonthKey && monthlyPeriods.length && !monthlyPeriods.some((period) => period.key === overallMonthKey)) overallMonthKey = monthlyPeriods.at(-1)?.key ?? ''
     $: overallPeriod = monthlyPeriods.find((period) => period.key === overallMonthKey)
     $: overallComparison = comparisonRows.find((row) => row.key === overallMonthKey)
-    $: maxMonthlySpending = Math.max(1, ...monthlyPeriods.map((period) => period.spending))
+    $: chartWindowCount = Math.max(1, Math.ceil(monthlyPeriods.length / CHART_MONTHS))
+    $: if (chartWindowOffset >= chartWindowCount) chartWindowOffset = Math.max(0, chartWindowCount - 1)
+    $: chartWindowStart = Math.max(0, monthlyPeriods.length - ((chartWindowOffset + 1) * CHART_MONTHS))
+    $: chartWindowEnd = monthlyPeriods.length - (chartWindowOffset * CHART_MONTHS)
     $: necessityPeriods = monthlyPeriods.map((period) => {
         const split = { necessity: 0, convenience: 0, unclassified: 0 }
         for (const category of period.categories) split[category.necessity] += category.totalAmount
         return { ...period, ...split }
     })
-    $: maxNecessitySpending = Math.max(1, ...necessityPeriods.map((period) => period.spending))
+    $: visibleNecessityPeriods = necessityPeriods.slice(chartWindowStart, chartWindowEnd)
+    $: maxNecessitySpending = Math.max(1, ...visibleNecessityPeriods.map((period) => period.spending))
     $: necessityPeriod = necessityPeriods.find((period) => period.key === overallMonthKey)
     $: aliasGroups = categories.filter((category) => aliasCategoryFilter === 'all' || category.id === aliasCategoryFilter).map((category) => {
         const categoryQuery = aliasCategorySearch[category.id]?.trim().toLocaleLowerCase() ?? ''
@@ -356,6 +364,22 @@
             toDate = `${dashboard.availablePeriods.lastMonth}-${new Date(Number(dashboard.availablePeriods.lastMonth.slice(0, 4)), Number(dashboard.availablePeriods.lastMonth.slice(5, 7)), 0).getDate()}`
         }
         refresh()
+    }
+
+    function shiftChartWindow(direction: -1 | 1) {
+        const nextOffset = Math.min(chartWindowCount - 1, Math.max(0, chartWindowOffset + direction))
+        chartWindowOffset = nextOffset
+        const selectedIndex = monthlyPeriods.length - (nextOffset * CHART_MONTHS) - 1
+        overallMonthKey = monthlyPeriods[selectedIndex]?.key ?? overallMonthKey
+    }
+
+    function chartMonthLabel(key: string) {
+        const [selectedYear, selectedMonth] = key.split('-').map(Number)
+        return new Intl.DateTimeFormat('en-US', { month: 'short' }).format(new Date(selectedYear, selectedMonth - 1, 1))
+    }
+
+    function chartYearLabel(key: string) {
+        return key.slice(0, 4)
     }
 
     function chooseMonth(event: Event) {
@@ -633,25 +657,36 @@
                     <Card className="p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Data quality</p><h2 class="mt-1 text-xl font-semibold text-slate-950">{coverage}% classified</h2><p class="hint">{unmatched.length + conflicts.length ? `${unmatched.length + conflicts.length} statements need attention.` : 'Every statement currently has one matching alias.'}</p></div><button class="icon-button" title="Open data quality review" aria-label="Open data quality review" onclick={() => page = 'review'}><ArrowRight size={17} /></button></div><div class="mt-5 grid grid-cols-2 gap-3"><div class="rounded-xl bg-amber-50 p-3"><p class="label text-amber-600">Unmatched</p><p class="mt-1 text-xl font-semibold text-amber-700">{unmatched.length}</p></div><div class="rounded-xl bg-red-50 p-3"><p class="label text-red-600">Conflicts</p><p class="mt-1 text-xl font-semibold text-red-700">{conflicts.length}</p></div></div></Card>
                 </div>
 
-                <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge>Overall history</Badge><h2 class="mt-2 page-title">See the pattern, then inspect a month.</h2><p class="page-subtitle">The chart is total spending across every category. Choose a category to compare it inside the selected month below.</p></div><div class="flex items-center gap-2"><span class="text-xs font-semibold text-slate-500">Compare category</span><select bind:value={comparisonCategory} class="field w-48" aria-label="Category for monthly comparison">{#each comparisonOptions as category}<option value={category}>{category}</option>{/each}</select></div></div>
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge>Overall history</Badge><h2 class="mt-2 page-title">See the pattern, then inspect a month.</h2><p class="page-subtitle">The chart splits total spending across every category. Choose a category to compare it inside the selected month below.</p></div><div class="flex items-center gap-2"><span class="text-xs font-semibold text-slate-500">Compare category</span><select bind:value={comparisonCategory} class="field w-48" aria-label="Category for monthly comparison">{#each comparisonOptions as category}<option value={category}>{category}</option>{/each}</select></div></div>
                 <Card className="overflow-hidden p-0">
                     <div class="border-b border-slate-100 p-5">
-                        <div class="flex items-center justify-between">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div>
-                                <h3 class="section-title">Monthly spending</h3>
-                                <p class="hint">Complete history · click a bar to inspect that month</p>
+                                <div class="flex items-center gap-2">
+                                    <h3 class="section-title">Necessity vs convenience</h3>
+                                    <Badge>Last 12 months</Badge>
+                                </div>
+                                <p class="hint">Last 12 months · use the arrows to browse older history</p>
                             </div>
-                            <span class="text-xs font-semibold text-slate-400">Average {money(monthlyPeriods.length ? monthlyPeriods.reduce((total, period) => total + period.spending, 0) / monthlyPeriods.length : 0)}</span>
+                            <div class="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500">
+                                <span class="flex items-center gap-1.5"><span class="dot emerald"></span>Necessity</span>
+                                <span class="flex items-center gap-1.5"><span class="dot violet"></span>Convenience</span>
+                                {#if necessityPeriods.some((period) => period.unclassified > 0)}<span class="flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-full bg-slate-300"></span>Unclassified</span>{/if}
+                                <span class="inline-flex items-center gap-1">
+                                    <button class="icon-button" title="Show older 12 months" aria-label="Show older 12 months" onclick={() => shiftChartWindow(1)} disabled={chartWindowOffset >= chartWindowCount - 1}><ChevronLeft size={17} /></button>
+                                    <button class="icon-button" title="Show newer 12 months" aria-label="Show newer 12 months" onclick={() => shiftChartWindow(-1)} disabled={chartWindowOffset === 0}><ChevronRight size={17} /></button>
+                                </span>
+                            </div>
                         </div>
-                        <div class="monthly-chart" role="img" aria-label="Monthly spending bar chart">
-                            {#each monthlyPeriods as period}
-                                <button class:chart-bar-selected={period.key === overallMonthKey} class="chart-bar" style={`--bar-height:${Math.max(4, (period.spending / maxMonthlySpending) * 100)}%`} aria-label={`${period.label}: ${money(period.spending)} spending`} aria-pressed={period.key === overallMonthKey} onclick={() => overallMonthKey = period.key}>
-                                    <span class="chart-value">{compactMoney(period.spending)}</span>
-                                    <span class="chart-track"><span class="chart-fill"></span></span>
-                                    <span class="chart-label">{period.label.split(' ')[0]}</span>
+                        <div class="necessity-chart" role="img" aria-label="Monthly necessity and convenience spending chart">
+                            {#each visibleNecessityPeriods as period}
+                                <button class:chart-bar-selected={period.key === overallMonthKey} class="necessity-bar" aria-label={`${period.label}: ${money(period.necessity)} necessity, ${money(period.convenience)} convenience`} aria-pressed={period.key === overallMonthKey} onclick={() => overallMonthKey = period.key}>
+                                    <span class="necessity-value">{compactMoney(period.spending)}</span>
+                                    <span class="necessity-track" style={`height:${Math.max(4, (period.spending / maxNecessitySpending) * 100)}%`}><span class="necessity-segment necessity" style={`height:${period.spending ? (period.necessity / period.spending) * 100 : 0}%`}></span><span class="necessity-segment convenience" style={`height:${period.spending ? (period.convenience / period.spending) * 100 : 0}%`}></span><span class="necessity-segment unclassified" style={`height:${period.spending ? (period.unclassified / period.spending) * 100 : 0}%`}></span></span>
+                                    <span class="chart-label"><span>{chartMonthLabel(period.key)}</span><span class="chart-year">{chartYearLabel(period.key)}</span></span>
                                 </button>
                             {:else}
-                                <p class="hint">No monthly history available.</p>
+                                <p class="hint">No monthly category data available.</p>
                             {/each}
                         </div>
                     </div>
@@ -691,7 +726,6 @@
                         </div>
                     </div>
                 </Card>
-                <Card className="overflow-hidden p-0"><div class="border-b border-slate-100 p-5"><div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><div class="flex items-center gap-2"><h3 class="section-title">Necessity vs convenience</h3><Badge>Monthly</Badge></div><p class="hint">How your spending mix changes month by month. Click a bar to inspect its totals.</p></div><div class="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500"><span class="flex items-center gap-1.5"><span class="dot emerald"></span>Necessity</span><span class="flex items-center gap-1.5"><span class="dot violet"></span>Convenience</span>{#if necessityPeriods.some((period) => period.unclassified > 0)}<span class="flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-full bg-slate-300"></span>Unclassified</span>{/if}</div></div><div class="necessity-chart" role="img" aria-label="Monthly necessity and convenience spending chart">{#each necessityPeriods as period}<button class:chart-bar-selected={period.key === overallMonthKey} class="necessity-bar" aria-label={`${period.label}: ${money(period.necessity)} necessity, ${money(period.convenience)} convenience`} aria-pressed={period.key === overallMonthKey} onclick={() => overallMonthKey = period.key}><span class="necessity-value">{compactMoney(period.spending)}</span><span class="necessity-track" style={`height:${Math.max(4, (period.spending / maxNecessitySpending) * 100)}%`}><span class="necessity-segment necessity" style={`height:${period.spending ? (period.necessity / period.spending) * 100 : 0}%`}></span><span class="necessity-segment convenience" style={`height:${period.spending ? (period.convenience / period.spending) * 100 : 0}%`}></span><span class="necessity-segment unclassified" style={`height:${period.spending ? (period.unclassified / period.spending) * 100 : 0}%`}></span></span><span class="chart-label">{period.label.split(' ')[0]}</span></button>{:else}<p class="hint">No monthly category data available.</p>{/each}</div><div class="grid gap-3 border-t border-slate-100 p-5 sm:grid-cols-3"><div class="trend-stat"><span>{necessityPeriod?.label ?? 'Selected month'} · Necessity</span><strong class="text-emerald-700">{money(necessityPeriod?.necessity)}</strong></div><div class="trend-stat"><span>{necessityPeriod?.label ?? 'Selected month'} · Convenience</span><strong class="text-violet-700">{money(necessityPeriod?.convenience)}</strong></div><div class="trend-stat"><span>Convenience share</span><strong>{necessityPeriod?.spending ? `${Math.round((necessityPeriod.convenience / necessityPeriod.spending) * 100)}%` : '—'}</strong></div></div></div></Card>
             </section>
         {:else if page === 'spending'}
             <section class="space-y-5 animate-float-in">
