@@ -59,6 +59,7 @@ export class FinanceService {
             const definition = definitions.find((item) => item.category === category)
             return {
                 ...series,
+                reviewStatus: this.ruleStore.getRecurringDecision(fileName, series.id) ?? 'pending',
                 ...(category ? {
                     category,
                     necessity: definition?.necessity ?? 'unclassified',
@@ -66,6 +67,14 @@ export class FinanceService {
                 } : {}),
             }
         })
+    }
+
+    setRecurringDecision(file: string, seriesId: string, decision: Parameters<RuleStoreService['setRecurringDecision']>[2]) {
+        return this.ruleStore.setRecurringDecision(basename(file), seriesId, decision)
+    }
+
+    setManualRecurring(file: string, statementIdValue: string, direction: Parameters<RuleStoreService['setManualRecurring']>[2]) {
+        return this.ruleStore.setManualRecurring(basename(file), statementIdValue, direction)
     }
 
     createCategory(name: string, necessity: 'necessity' | 'convenience') {

@@ -3,11 +3,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { basename, dirname } from 'path'
 import { AliasRule, ClassifiedStatement, ManagedCategory, categoryId, classifyStatement, statementId } from '../core/finance/rule-model.js'
 import type { BankStatement, SpendingCategoryDefinition, SpendingNecessity } from '../core/common/common.dto.js'
+import type { RecurrenceDirection } from '../core/finance/recurrence-model.js'
+
+export type RecurringDecision = 'confirmed' | 'denied'
 
 interface RuleFile {
-    version: 3
+    version: 4
     categories: ManagedCategory[]
     aliasesByFile: Record<string, AliasRule[]>
+    recurringDecisionsByFile: Record<string, Record<string, RecurringDecision>>
+    manualRecurringByFile: Record<string, Record<string, RecurrenceDirection>>
 }
 
 @Injectable()
@@ -15,23 +20,31 @@ export class RuleStoreService {
     private readonly path = process.env.FINANCE_RULES_PATH || './data/finance-rules.json'
 
     private read(): RuleFile {
-        if (!existsSync(this.path)) return { version: 3, categories: [], aliasesByFile: {} }
+        if (!existsSync(this.path)) return this.empty()
         const parsed = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<Omit<RuleFile, 'version'>> & { version?: number }
         if (parsed.version === 2) {
             const aliases = Object.values(parsed.aliasesByFile ?? {}).flat()
             const referenced = new Set(aliases.map((alias) => alias.categoryId))
             return {
-                version: 3,
+                version: 4,
                 categories: (parsed.categories ?? []).filter((category) => referenced.has(category.id)),
                 aliasesByFile: parsed.aliasesByFile ?? {},
+                recurringDecisionsByFile: {},
+                manualRecurringByFile: {},
             }
         }
-        if (parsed.version !== 3) return { version: 3, categories: [], aliasesByFile: {} }
+        if (parsed.version !== 3 && parsed.version !== 4) return this.empty()
         return {
-            version: 3,
+            version: 4,
             categories: parsed.categories ?? [],
             aliasesByFile: parsed.aliasesByFile ?? {},
+            recurringDecisionsByFile: parsed.recurringDecisionsByFile ?? {},
+            manualRecurringByFile: parsed.manualRecurringByFile ?? {},
         }
+    }
+
+    private empty(): RuleFile {
+        return { version: 4, categories: [], aliasesByFile: {}, recurringDecisionsByFile: {}, manualRecurringByFile: {} }
     }
 
     private write(data: RuleFile) {
@@ -74,6 +87,7 @@ export class RuleStoreService {
                 purpose: item.statement.purpose ?? '',
                 bankNumberOwner: item.statement.bank_number_owner ?? '',
                 status: item.status,
+                recurringDirection: data.manualRecurringByFile['*']?.[item.id],
                 matches: item.matches.map((alias) => ({ id: alias.id, value: alias.value, categoryId: alias.categoryId })),
                 suggestions: item.status === 'conflict' ? [
                     { kind: 'transaction-type', label: `Keep one match for ${item.statement.transaction_type || 'this transaction type'}` },
@@ -88,6 +102,27 @@ export class RuleStoreService {
             },
             aliasUsage: Object.fromEntries(aliasUsage),
         }
+    }
+
+    setRecurringDecision(fileName: string, seriesId: string, decision: RecurringDecision) {
+        const data = this.ensure(fileName, [])
+        data.recurringDecisionsByFile['*'] ??= {}
+        data.recurringDecisionsByFile['*'][seriesId] = decision
+        this.write(data)
+        return { seriesId, decision }
+    }
+
+    getRecurringDecision(fileName: string, seriesId: string): RecurringDecision | undefined {
+        return this.read().recurringDecisionsByFile['*']?.[seriesId]
+    }
+
+    setManualRecurring(fileName: string, statement: string, direction: RecurrenceDirection | undefined) {
+        const data = this.ensure(fileName, [])
+        data.manualRecurringByFile['*'] ??= {}
+        if (direction) data.manualRecurringByFile['*'][statement] = direction
+        else delete data.manualRecurringByFile['*'][statement]
+        this.write(data)
+        return { statementId: statement, direction: direction ?? null }
     }
 
     getCategoryDefinitions(fileName: string, statements: BankStatement[]): SpendingCategoryDefinition[] {

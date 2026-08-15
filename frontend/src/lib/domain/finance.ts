@@ -47,6 +47,7 @@ export type FinanceScope =
 export type RecurrenceCadence = 'monthly' | 'yearly'
 export type RecurrenceDirection = 'income' | 'expense'
 export type RecurrenceConfidence = 'candidate' | 'probable' | 'confirmed'
+export type RecurringReviewStatus = 'pending' | 'confirmed' | 'denied'
 
 export interface RecurringSeries {
     id: string
@@ -72,6 +73,7 @@ export interface RecurringSeries {
     expectedDateFrom: string
     expectedDateTo: string
     confidence: RecurrenceConfidence
+    reviewStatus: RecurringReviewStatus
     evidence: {
         occurrenceCount: number
         coveredCycles: number

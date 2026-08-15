@@ -132,6 +132,10 @@
 .status-dot.matched { @apply bg-emerald-500; }
 .status-dot.unmatched { @apply bg-amber-500; }
 .status-dot.conflict { @apply bg-red-500; }
+.recurring-button { @apply border border-transparent bg-slate-50 text-slate-400 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700; }
+.recurring-button-active { @apply border-indigo-200 bg-indigo-50 text-indigo-700; }
+.recurring-confirm:hover { @apply bg-emerald-50 text-emerald-700; }
+.item-denied { @apply opacity-55; }
 
 /* Search controls keep their icon in a dedicated visual gutter. */
 .field.pl-9 { padding-left: 2.5rem; }

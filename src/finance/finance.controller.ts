@@ -94,6 +94,18 @@ export class FinanceController {
         return this.financeService.getRecurring(this.getFilePath(fileName))
     }
 
+    @Put('recurring/:fileName/decisions/:seriesId')
+    setRecurringDecision(@Param('fileName') fileName: string, @Param('seriesId') seriesId: string, @Body() body: Record<string, unknown>) {
+        if (body.decision !== 'confirmed' && body.decision !== 'denied') throw new BadRequestException('decision must be confirmed or denied')
+        return this.financeService.setRecurringDecision(this.getFilePath(fileName), seriesId, body.decision)
+    }
+
+    @Put('recurring/:fileName/statements/:statementId')
+    setManualRecurring(@Param('fileName') fileName: string, @Param('statementId') statementId: string, @Body() body: Record<string, unknown>) {
+        if (body.direction !== 'income' && body.direction !== 'expense' && body.direction !== null) throw new BadRequestException('direction must be income, expense, or null')
+        return this.financeService.setManualRecurring(this.getFilePath(fileName), statementId, body.direction ?? undefined)
+    }
+
     @Post('categories')
     createCategory(@Body() body: { name?: string; necessity?: 'necessity' | 'convenience' }) {
         return this.financeService.createCategory(this.requireText(body.name, 'name'), this.requireNecessity(body.necessity))

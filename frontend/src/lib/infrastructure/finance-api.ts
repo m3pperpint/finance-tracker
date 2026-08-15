@@ -1,4 +1,4 @@
-import type { DashboardQuery, DashboardSnapshot, RecurringSeries } from '../domain/finance'
+import type { DashboardQuery, DashboardSnapshot, RecurringSeries, RecurringReviewStatus, RecurrenceDirection } from '../domain/finance'
 import type { FinanceGateway } from '../application/load-dashboard'
 
 const DEFAULT_API_BASE_URL = 'http://localhost:3000'
@@ -33,6 +33,14 @@ export class FinanceApi implements FinanceGateway {
 
     async getRecurring(fileName: string): Promise<RecurringSeries[]> {
         return this.get<RecurringSeries[]>(`/finance/recurring/${encodeURIComponent(fileName)}`)
+    }
+
+    async setRecurringDecision(fileName: string, seriesId: string, decision: Exclude<RecurringReviewStatus, 'pending'>) {
+        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/decisions/${encodeURIComponent(seriesId)}`, 'PUT', { decision })
+    }
+
+    async setManualRecurring(fileName: string, statementId: string, direction: RecurrenceDirection | null) {
+        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/statements/${encodeURIComponent(statementId)}`, 'PUT', { direction })
     }
 
     async uploadStatement(file: File): Promise<{ fileName: string }> {
