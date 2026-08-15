@@ -1,4 +1,4 @@
-import type { DashboardQuery, DashboardSnapshot } from '../domain/finance'
+import type { DashboardQuery, DashboardSnapshot, RecurringSeries } from '../domain/finance'
 import type { FinanceGateway } from '../application/load-dashboard'
 
 const DEFAULT_API_BASE_URL = 'http://localhost:3000'
@@ -21,10 +21,18 @@ export class FinanceApi implements FinanceGateway {
         if (query.scope.mode === 'year') {
             params.set('year', String(query.scope.year))
         }
+        if (query.scope.mode === 'range') {
+            params.set('from', query.scope.from)
+            params.set('to', query.scope.to)
+        }
 
         return this.get<DashboardSnapshot>(
             `/finance/dashboard/${file}?${params.toString()}`
         )
+    }
+
+    async getRecurring(fileName: string): Promise<RecurringSeries[]> {
+        return this.get<RecurringSeries[]>(`/finance/recurring/${encodeURIComponent(fileName)}`)
     }
 
     async uploadStatement(file: File): Promise<{ fileName: string }> {

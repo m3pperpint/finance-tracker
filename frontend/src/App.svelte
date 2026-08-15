@@ -5,9 +5,9 @@
         ArrowDownUp,
         ArrowRight,
         ArrowUpRight,
+        CalendarClock,
         Check,
         ChevronDown,
-        CirclePlus,
         FileSpreadsheet,
         Filter,
         FolderKanban,
@@ -25,14 +25,14 @@
         WandSparkles,
     } from '@lucide/svelte'
     import { loadDashboard } from '$lib/application/load-dashboard'
-    import type { DashboardView, FinanceScope, ViewMode } from '$lib/domain/finance'
+    import type { DashboardView, FinanceScope, RecurringSeries, ViewMode } from '$lib/domain/finance'
     import { FinanceApi } from '$lib/infrastructure/finance-api'
     import Badge from '$lib/components/ui/Badge.svelte'
     import Button from '$lib/components/ui/Button.svelte'
     import Card from '$lib/components/ui/Card.svelte'
 
-    type Page = 'dashboard' | 'statements' | 'aliases' | 'categories' | 'review'
-    const pageRoutes: Page[] = ['dashboard', 'review', 'aliases', 'categories', 'statements']
+    type Page = 'dashboard' | 'recurring' | 'statements' | 'aliases' | 'categories' | 'review'
+    const pageRoutes: Page[] = ['dashboard', 'recurring', 'review', 'aliases', 'categories', 'statements']
     type Necessity = 'necessity' | 'convenience'
     type AliasSort = 'usage-desc' | 'usage-asc' | 'name-asc' | 'name-desc'
     type AliasUsageFilter = 'all' | 'used' | 'unused'
@@ -90,11 +90,14 @@
     }
 
     let page: Page = pageFromUrl()
-    let mode: ViewMode = 'all'
+    let mode: ViewMode = 'month'
     let monthKey = ''
     let year = new Date().getFullYear()
+    let fromDate = ''
+    let toDate = ''
     let fileName = DEFAULT_FILE
     let dashboard: DashboardView | null = null
+    let recurring: RecurringSeries[] = []
     let rules: RulesView | null = null
     let selectedFile: File | null = null
     let loading = false
@@ -125,7 +128,7 @@
     $: unmatched = rules?.statements.filter((item) => item.status === 'unmatched') ?? []
     $: conflicts = rules?.statements.filter((item) => item.status === 'conflict') ?? []
     $: coverage = rules?.stats.total ? Math.round((rules.stats.matched / rules.stats.total) * 100) : 0
-    $: scopeLabel = mode === 'all' ? 'All time' : mode === 'year' ? String(year) : monthLabel(monthKey)
+    $: scopeLabel = mode === 'all' ? 'All time' : mode === 'year' ? String(year) : mode === 'range' ? rangeLabel(fromDate, toDate) : monthLabel(monthKey)
     $: monthlyPeriods = dashboard?.evolution.monthly ?? []
     $: comparisonOptions = [...new Set(monthlyPeriods.flatMap((period) => period.categories.map((item) => item.category)))].sort()
     $: if (!comparisonCategory && comparisonOptions.length) comparisonCategory = comparisonOptions[0]
@@ -138,6 +141,20 @@
         return { ...period, amount, previous, usual }
     })
     $: comparisonAverage = comparisonRows.length ? comparisonRows.reduce((total, row) => total + row.amount, 0) / comparisonRows.length : 0
+    $: comparisonPeriods = mode === 'year' ? (dashboard?.evolution.yearly ?? []) : monthlyPeriods
+    $: activePeriodKey = mode === 'year' ? String(year) : mode === 'month' ? monthKey : ''
+    $: activePeriod = comparisonPeriods.find((period) => period.key === activePeriodKey)
+    $: usualPeriodSpending = activePeriod ? usualAmount(comparisonPeriods.filter((period) => period.key !== activePeriodKey).map((period) => period.spending)) : null
+    $: spendingDelta = activePeriod && usualPeriodSpending != null ? activePeriod.spending - usualPeriodSpending : null
+    $: topChanges = activePeriod ? activePeriod.categories.map((category) => {
+        const usual = usualAmount(comparisonPeriods.filter((period) => period.key !== activePeriodKey).map((period) => period.categories.find((item) => item.category === category.category)?.totalAmount ?? 0))
+        return { ...category, usual, difference: usual == null ? null : category.totalAmount - usual }
+    }).filter((category) => category.difference != null).sort((a, b) => Math.abs(b.difference ?? 0) - Math.abs(a.difference ?? 0)).slice(0, 3) : []
+    $: recurringExpenses = recurring.filter((series) => series.direction === 'expense')
+    $: recurringIncome = recurring.filter((series) => series.direction === 'income')
+    $: monthlyRecurringExpenses = recurringExpenses.reduce((total, series) => total + series.amountModel.typicalAmount / series.intervalMonths, 0)
+    $: annualRecurringExpenses = recurringExpenses.reduce((total, series) => total + series.amountModel.typicalAmount * (12 / series.intervalMonths), 0)
+    $: upcomingRecurring = [...recurring].sort((a, b) => a.nextExpectedDate.localeCompare(b.nextExpectedDate)).slice(0, 5)
     $: if (!overallMonthKey && monthlyPeriods.length) overallMonthKey = monthlyPeriods.at(-1)?.key ?? ''
     $: if (overallMonthKey && monthlyPeriods.length && !monthlyPeriods.some((period) => period.key === overallMonthKey)) overallMonthKey = monthlyPeriods.at(-1)?.key ?? ''
     $: overallPeriod = monthlyPeriods.find((period) => period.key === overallMonthKey)
@@ -210,6 +227,7 @@
             }
             dashboard = nextDashboard
             rules = await api.getRules(fileName.trim())
+            recurring = await api.getRecurring(fileName.trim())
         } catch (cause) {
             error = cause instanceof Error ? cause.message : 'Could not load the finance workspace.'
         } finally {
@@ -225,6 +243,7 @@
     function currentScope(): FinanceScope {
         if (mode === 'all') return { mode: 'all' }
         if (mode === 'year') return Number.isInteger(year) ? { mode: 'year', year } : { mode: 'all' }
+        if (mode === 'range') return isDateKey(fromDate) && isDateKey(toDate) && fromDate <= toDate ? { mode: 'range', from: fromDate, to: toDate } : { mode: 'all' }
         if (!/^\d{4}-\d{2}$/.test(monthKey)) return { mode: 'all' }
         const [selectedYear, selectedMonth] = monthKey.split('-').map(Number)
         return { mode: 'month', year: selectedYear, month: selectedMonth }
@@ -236,10 +255,38 @@
         return new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(new Date(selectedYear, selectedMonth - 1, 1))
     }
 
+    function rangeLabel(from: string, to: string) {
+        if (!from || !to) return 'Choose a date range'
+        return `${dateLabel(from)} – ${dateLabel(to)}`
+    }
+
+    function dateLabel(value: string) {
+        if (!isDateKey(value)) return 'Select date'
+        return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${value}T00:00:00`))
+    }
+
+    function isDateKey(value: string) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+        const [year, month, day] = value.split('-').map(Number)
+        const date = new Date(year, month - 1, day)
+        return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+    }
+
+    function usualAmount(values: number[]) {
+        if (values.length < 2) return null
+        const sorted = [...values].sort((a, b) => a - b)
+        const middle = Math.floor(sorted.length / 2)
+        return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+    }
+
     function setMode(nextMode: ViewMode) {
         mode = nextMode
         if (nextMode === 'month' && !monthKey) monthKey = dashboard?.availablePeriods.lastMonth ?? ''
         if (nextMode === 'year' && !dashboard?.availablePeriods.years.includes(year)) year = dashboard?.availablePeriods.years.at(-1) ?? year
+        if (nextMode === 'range' && (!isDateKey(fromDate) || !isDateKey(toDate)) && dashboard?.availablePeriods.firstMonth) {
+            fromDate = `${dashboard.availablePeriods.firstMonth}-01`
+            toDate = `${dashboard.availablePeriods.lastMonth}-${new Date(Number(dashboard.availablePeriods.lastMonth.slice(0, 4)), Number(dashboard.availablePeriods.lastMonth.slice(5, 7)), 0).getDate()}`
+        }
         refresh()
     }
 
@@ -253,8 +300,24 @@
         refresh()
     }
 
+    function chooseRange() {
+        if (isDateKey(fromDate) && isDateKey(toDate) && fromDate <= toDate) refresh()
+    }
+
     function money(value: number | null | undefined) {
         return value == null ? '—' : currency.format(value)
+    }
+
+    function recurringAmount(series: RecurringSeries) {
+        return `${series.direction === 'expense' ? '−' : '+'}${money(series.amountModel.typicalAmount)}`
+    }
+
+    function cadenceLabel(series: RecurringSeries) {
+        return series.cadence === 'monthly' ? 'Monthly' : 'Yearly'
+    }
+
+    function confidenceTone(confidence: RecurringSeries['confidence']) {
+        return confidence === 'confirmed' ? 'success' : confidence === 'probable' ? 'warning' : 'neutral'
     }
 
     function delta(value: number | null) {
@@ -451,15 +514,15 @@
     }
 </script>
 
-<svelte:head><title>Finance tracker · Rules workspace</title><meta name="description" content="Classify every bank statement with clear, manageable rules." /></svelte:head>
+<svelte:head><title>Finance tracker · Spending overview</title><meta name="description" content="Understand spending, recurring payments, and where money goes." /></svelte:head>
 
 <main class="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,0.13),_transparent_32rem),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)]">
     <div class="mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
         <header class="mb-6 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div>
                 <div class="mb-3 flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-emerald-500"></span><span class="text-xs font-bold uppercase tracking-[0.22em] text-emerald-700">Finance workspace</span></div>
-                <h1 class="text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">Make every transaction make sense.</h1>
-                <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600">Manage the rules behind your reports, spot gaps, and keep classification at exactly one match.</p>
+                <h1 class="text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">Understand your money, then decide.</h1>
+                <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600">See what changed, what repeats, and where your spending has room to move.</p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
                 <label class="flex h-10 max-w-64 items-center gap-2 rounded-xl border border-white/80 bg-white/80 px-3 text-sm shadow-sm backdrop-blur"><FileSpreadsheet size={16} class="text-slate-400" /><input bind:value={fileName} onkeydown={(event) => event.key === 'Enter' && refresh()} class="min-w-0 bg-transparent outline-none" aria-label="Statement filename" /></label>
@@ -471,6 +534,7 @@
 
         <nav class="mb-6 flex gap-1 overflow-x-auto rounded-2xl border border-white/80 bg-white/70 p-1.5 shadow-sm backdrop-blur" aria-label="Main navigation">
             <button class:active-tab={page === 'dashboard'} class="tab" onclick={() => navigate('dashboard')}><LayoutDashboard size={16} />Overview</button>
+            <button class:active-tab={page === 'recurring'} class="tab" onclick={() => navigate('recurring')}><CalendarClock size={16} />Recurring {#if recurring.length}<span class="tab-count">{recurring.length}</span>{/if}</button>
             <button class:active-tab={page === 'review'} class="tab" onclick={() => navigate('review')}><AlertTriangle size={16} />Review {#if unmatched.length + conflicts.length}<span class="tab-count danger-count">{unmatched.length + conflicts.length}</span>{/if}</button>
             <button class:active-tab={page === 'aliases'} class="tab" onclick={() => navigate('aliases')}><Tag size={16} />Aliases <span class="tab-count">{aliases.length}</span></button>
             <button class:active-tab={page === 'categories'} class="tab" onclick={() => navigate('categories')}><FolderKanban size={16} />Categories</button>
@@ -481,7 +545,8 @@
 
         {#if page === 'dashboard'}
             <section class="space-y-5 animate-float-in">
-                <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge tone="success">Selected period</Badge><h2 class="mt-2 page-title">What happened in {scopeLabel}</h2><p class="page-subtitle">These figures change with the Month / Year / All time selector below.</p></div><span class="text-xs font-semibold text-slate-400">{fileName}</span></div>
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge tone="success">Selected period</Badge><h2 class="mt-2 page-title">What happened in {scopeLabel}</h2><p class="page-subtitle">Start with a period, then compare what happened with what is usual.</p></div><span class="text-xs font-semibold text-slate-400">{fileName}</span></div>
+                <Card className="flex flex-col gap-4 border-indigo-100 bg-indigo-50/60 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p class="label text-indigo-500">Analyze your money</p><p class="mt-1 text-sm text-slate-700">Choose the period that should drive every number below.</p></div><div class="flex flex-wrap items-center gap-2"><div class="inline-flex rounded-xl bg-white/70 p-1">{#each [['month', 'Month'], ['year', 'Year'], ['range', 'Custom'], ['all', 'All time']] as option}<button class:active-mode={mode === option[0]} class="rounded-lg px-3 py-2 text-xs font-semibold text-slate-500 transition hover:text-slate-950" onclick={() => setMode(option[0] as ViewMode)}>{option[1]}</button>{/each}</div>{#if mode === 'month'}<div class="relative"><button class="field min-w-44 text-left">{scopeLabel}</button><input type="month" aria-label="Select month" bind:value={monthKey} min={dashboard?.availablePeriods.firstMonth} max={dashboard?.availablePeriods.lastMonth} onchange={chooseMonth} class="absolute inset-0 h-full w-full cursor-pointer opacity-0" /></div>{:else if mode === 'year'}<div class="relative"><button class="field min-w-28 text-left">{year}</button><select aria-label="Select year" bind:value={year} onchange={chooseYear} class="absolute inset-0 h-full w-full cursor-pointer opacity-0">{#each dashboard?.availablePeriods.years ?? [year] as availableYear}<option value={availableYear}>{availableYear}</option>{/each}</select></div>{:else if mode === 'range'}<div class="flex flex-wrap items-center gap-2"><input type="date" bind:value={fromDate} onchange={chooseRange} class="field" aria-label="Range start" /><span class="text-xs font-semibold text-slate-400">to</span><input type="date" bind:value={toDate} onchange={chooseRange} class="field" aria-label="Range end" /></div>{/if}</div></Card>
                 <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                     <Card className="p-5"><div class="mb-5 flex items-center justify-between"><span class="icon-tile bg-indigo-50 text-indigo-600"><Sparkles size={18} /></span><Badge>{scopeLabel}</Badge></div><p class="label">Net movement</p><p class="metric">{money(dashboard?.metrics.netMovement)}</p><p class="hint">Income minus spending</p></Card>
                     <Card className="p-5"><div class="mb-5 flex items-center justify-between"><span class="icon-tile bg-emerald-50 text-emerald-600"><ArrowRight size={18} /></span><Badge>{scopeLabel}</Badge></div><p class="label">Income</p><p class="metric">{money(dashboard?.metrics.income)}</p><p class="hint">Money received in this period</p></Card>
@@ -489,16 +554,14 @@
                     <Card className="p-5"><div class="mb-5 flex items-center justify-between"><span class="icon-tile bg-violet-50 text-violet-600"><Sparkles size={18} /></span><Badge>{scopeLabel}</Badge></div><p class="label">Top category</p><p class="truncate text-2xl font-semibold tracking-tight text-slate-950">{dashboard?.metrics.topCategory?.category ?? '—'}</p><p class="hint">{money(dashboard?.metrics.topCategory?.totalAmount)} in this period</p></Card>
                 </div>
 
-                <Card className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p class="label">Report timeframe</p><p class="mt-1 text-sm text-slate-600">Cards and category totals below use this scope.</p></div><div class="flex flex-wrap items-center gap-2"><div class="inline-flex rounded-xl bg-slate-100 p-1">{#each [['month', 'Month'], ['year', 'Year'], ['all', 'All time']] as option}<button class:active-mode={mode === option[0]} class="rounded-lg px-3 py-2 text-xs font-semibold text-slate-500 transition hover:text-slate-950" onclick={() => setMode(option[0] as ViewMode)}>{option[1]}</button>{/each}</div>{#if mode === 'month'}<div class="relative"><button class="field min-w-44 text-left">{scopeLabel}</button><input type="month" aria-label="Select month" bind:value={monthKey} min={dashboard?.availablePeriods.firstMonth} max={dashboard?.availablePeriods.lastMonth} onchange={chooseMonth} class="absolute inset-0 h-full w-full cursor-pointer opacity-0" /></div>{:else if mode === 'year'}<div class="relative"><button class="field min-w-28 text-left">{year}</button><select aria-label="Select year" bind:value={year} onchange={chooseYear} class="absolute inset-0 h-full w-full cursor-pointer opacity-0">{#each dashboard?.availablePeriods.years ?? [year] as availableYear}<option value={availableYear}>{availableYear}</option>{/each}</select></div>{/if}</div></Card>
-
-                <Card className="overflow-hidden p-0">
-                    <div class="flex flex-col gap-4 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between"><div><div class="mb-1 flex items-center gap-2"><Badge tone={unmatched.length || conflicts.length ? 'danger' : 'success'}>{unmatched.length || conflicts.length ? 'Needs attention' : 'In good shape'}</Badge><span class="text-xs font-semibold text-slate-400">Entire statement history</span></div><h2 class="text-xl font-semibold text-slate-950">Rules health</h2><p class="mt-1 text-sm text-slate-500">This section is independent from the selected period above.</p></div><Button onclick={() => page = unmatched.length || conflicts.length ? 'review' : 'aliases'}><Settings2 size={15} />{unmatched.length || conflicts.length ? 'Open review' : 'Manage rules'}<ArrowRight size={15} /></Button></div>
-                    <div class="grid divide-y divide-slate-100 sm:grid-cols-3 sm:divide-x sm:divide-y-0"><div class="p-5"><p class="label">Matched once</p><p class="mt-2 text-2xl font-semibold text-emerald-700">{rules?.stats.matched ?? 0}</p><div class="progress mt-3"><span style={`width:${coverage}%`}></span></div></div><div class="p-5"><p class="label">No matching alias</p><p class="mt-2 text-2xl font-semibold text-amber-600">{unmatched.length}</p><p class="hint">Quick-create from the Review page</p></div><div class="p-5"><p class="label">Multiple matches</p><p class="mt-2 text-2xl font-semibold text-red-600">{conflicts.length}</p><p class="hint">Narrow or pin the overlapping rules</p></div></div>
-                </Card>
+                <div class="grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
+                    <Card className="border-slate-200 bg-white p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Period at a glance</p><h2 class="mt-1 text-xl font-semibold text-slate-950">{spendingDelta == null ? 'Build your baseline' : spendingDelta >= 0 ? `${money(spendingDelta)} above usual` : `${money(Math.abs(spendingDelta))} below usual`}</h2><p class="hint">{usualPeriodSpending == null ? 'Select a month or year with enough history to compare.' : `Usual spending is ${money(usualPeriodSpending)} for this view.`}</p></div><Badge tone={spendingDelta != null && spendingDelta > 0 ? 'warning' : 'success'}>{spendingDelta == null ? 'No comparison' : spendingDelta > 0 ? 'Above usual' : 'On track'}</Badge></div>{#if topChanges.length}<div class="mt-5 space-y-3">{#each topChanges as item}<div class="flex items-center justify-between gap-3 text-sm"><span class="min-w-0 truncate font-medium text-slate-700">{item.category}</span><span class={item.difference && item.difference > 0 ? 'font-semibold text-amber-700' : 'font-semibold text-emerald-700'}>{delta(item.difference)}</span></div>{/each}</div>{:else}<p class="mt-5 text-sm text-slate-500">Your category comparison will appear once this period has a usable history.</p>{/if}</Card>
+                    <Card className="border-indigo-100 bg-indigo-50/50 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label text-indigo-500">Recurring outlook</p><h2 class="mt-1 text-xl font-semibold text-slate-950">{money(monthlyRecurringExpenses)} / month</h2><p class="hint">Detected recurring expenses · {money(annualRecurringExpenses)} annualized</p></div><button class="icon-button" title="Open recurring report" aria-label="Open recurring report" onclick={() => navigate('recurring')}><ArrowRight size={17} /></button></div><div class="mt-5 space-y-2">{#each upcomingRecurring.slice(0, 3) as item}<div class="flex items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2.5 text-sm"><span class="min-w-0 truncate font-medium text-slate-700">{item.label}</span><span class="shrink-0 text-xs font-semibold text-slate-500">{dateLabel(item.nextExpectedDate)} · {money(item.amountModel.typicalAmount)}</span></div>{:else}<p class="text-sm text-slate-500">No recurring series detected yet.</p>{/each}</div></Card>
+                </div>
 
                 <div class="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
                     <Card className="p-5"><div class="mb-5 flex items-center justify-between"><div><div class="flex items-center gap-2"><h2 class="section-title">Spending by category</h2><Badge>{scopeLabel}</Badge></div><p class="hint">Resolved from aliases for the selected period</p></div><button class="icon-button" title="Open categories" aria-label="Open categories" onclick={() => page = 'categories'}><ArrowRight size={17} /></button></div><div class="space-y-4">{#each dashboard?.categories.slice(0, 6) ?? [] as item}<div><div class="mb-1.5 flex items-center justify-between text-sm"><span class="font-medium text-slate-700">{item.category}</span><span class="font-semibold text-slate-950">{money(item.totalAmount)}</span></div><div class="progress"><span style={`width:${Math.max(5, item.shareOfSpending * 100)}%`}></span></div></div>{:else}<p class="hint">No spending data yet.</p>{/each}</div></Card>
-                    <Card className="p-5"><div class="mb-5 flex items-center justify-between"><div><div class="flex items-center gap-2"><h2 class="section-title">Recently unresolved</h2><Badge>Entire history</Badge></div><p class="hint">The next best rules to add</p></div><button class="icon-button" title="Open review" aria-label="Open review" onclick={() => page = 'review'}><ArrowRight size={17} /></button></div><div class="space-y-3">{#each unmatched.slice(0, 4) as item}<button class="review-mini" onclick={() => openNewAlias(item.text)}><span class="min-w-0"><span class="block truncate font-medium text-slate-700">{item.text || item.transactionType || 'Untitled statement'}</span><span class="mt-1 block text-xs text-slate-400">{money(item.amount)}</span></span><CirclePlus size={17} class="shrink-0 text-primary" /></button>{:else}<div class="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-700"><Check size={16} class="mb-2" /><p class="font-semibold">Nothing waiting here.</p><p class="mt-1 text-xs">Every statement has one matching alias.</p></div>{/each}</div></Card>
+                    <Card className="p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Data quality</p><h2 class="mt-1 text-xl font-semibold text-slate-950">{coverage}% classified</h2><p class="hint">{unmatched.length + conflicts.length ? `${unmatched.length + conflicts.length} statements need attention.` : 'Every statement currently has one matching alias.'}</p></div><button class="icon-button" title="Open data quality review" aria-label="Open data quality review" onclick={() => page = 'review'}><ArrowRight size={17} /></button></div><div class="mt-5 grid grid-cols-2 gap-3"><div class="rounded-xl bg-amber-50 p-3"><p class="label text-amber-600">Unmatched</p><p class="mt-1 text-xl font-semibold text-amber-700">{unmatched.length}</p></div><div class="rounded-xl bg-red-50 p-3"><p class="label text-red-600">Conflicts</p><p class="mt-1 text-xl font-semibold text-red-700">{conflicts.length}</p></div></div></Card>
                 </div>
 
                 <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge>Overall history</Badge><h2 class="mt-2 page-title">See the pattern, then inspect a month.</h2><p class="page-subtitle">The chart is total spending across every category. Choose a category to compare it inside the selected month below.</p></div><div class="flex items-center gap-2"><span class="text-xs font-semibold text-slate-500">Compare category</span><select bind:value={comparisonCategory} class="field w-48" aria-label="Category for monthly comparison">{#each comparisonOptions as category}<option value={category}>{category}</option>{/each}</select></div></div>
@@ -560,6 +623,23 @@
                     </div>
                 </Card>
                 <Card className="overflow-hidden p-0"><div class="border-b border-slate-100 p-5"><div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><div class="flex items-center gap-2"><h3 class="section-title">Necessity vs convenience</h3><Badge>Monthly</Badge></div><p class="hint">How your spending mix changes month by month. Click a bar to inspect its totals.</p></div><div class="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500"><span class="flex items-center gap-1.5"><span class="dot emerald"></span>Necessity</span><span class="flex items-center gap-1.5"><span class="dot violet"></span>Convenience</span>{#if necessityPeriods.some((period) => period.unclassified > 0)}<span class="flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-full bg-slate-300"></span>Unclassified</span>{/if}</div></div><div class="necessity-chart" role="img" aria-label="Monthly necessity and convenience spending chart">{#each necessityPeriods as period}<button class:chart-bar-selected={period.key === overallMonthKey} class="necessity-bar" aria-label={`${period.label}: ${money(period.necessity)} necessity, ${money(period.convenience)} convenience`} aria-pressed={period.key === overallMonthKey} onclick={() => overallMonthKey = period.key}><span class="necessity-value">{compactMoney(period.spending)}</span><span class="necessity-track" style={`height:${Math.max(4, (period.spending / maxNecessitySpending) * 100)}%`}><span class="necessity-segment necessity" style={`height:${period.spending ? (period.necessity / period.spending) * 100 : 0}%`}></span><span class="necessity-segment convenience" style={`height:${period.spending ? (period.convenience / period.spending) * 100 : 0}%`}></span><span class="necessity-segment unclassified" style={`height:${period.spending ? (period.unclassified / period.spending) * 100 : 0}%`}></span></span><span class="chart-label">{period.label.split(' ')[0]}</span></button>{:else}<p class="hint">No monthly category data available.</p>{/each}</div><div class="grid gap-3 border-t border-slate-100 p-5 sm:grid-cols-3"><div class="trend-stat"><span>{necessityPeriod?.label ?? 'Selected month'} · Necessity</span><strong class="text-emerald-700">{money(necessityPeriod?.necessity)}</strong></div><div class="trend-stat"><span>{necessityPeriod?.label ?? 'Selected month'} · Convenience</span><strong class="text-violet-700">{money(necessityPeriod?.convenience)}</strong></div><div class="trend-stat"><span>Convenience share</span><strong>{necessityPeriod?.spending ? `${Math.round((necessityPeriod.convenience / necessityPeriod.spending) * 100)}%` : '—'}</strong></div></div></div></Card>
+            </section>
+        {:else if page === 'recurring'}
+            <section class="space-y-5 animate-float-in">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge tone="success">Planning view · {recurring.length} detected</Badge><h2 class="mt-2 page-title">Recurring money, made visible.</h2><p class="page-subtitle">See the payments and income that are likely to repeat, when they are due, and what they cost over a year.</p></div><span class="text-xs font-semibold text-slate-400">Derived from statement history</span></div>
+                <div class="grid gap-4 md:grid-cols-3">
+                    <Card className="p-5"><p class="label">Recurring expenses / month</p><p class="metric">{money(monthlyRecurringExpenses)}</p><p class="hint">Yearly payments converted to a monthly run-rate.</p></Card>
+                    <Card className="p-5"><p class="label">Recurring expenses / year</p><p class="metric">{money(annualRecurringExpenses)}</p><p class="hint">Useful for seeing the real cost of small subscriptions.</p></Card>
+                    <Card className="p-5"><p class="label">Recurring income</p><p class="metric text-emerald-700">{money(recurringIncome.reduce((total, series) => total + series.amountModel.typicalAmount * (12 / series.intervalMonths), 0))}</p><p class="hint">Annualized from detected repeating income.</p></Card>
+                </div>
+                <Card className="overflow-hidden p-0">
+                    <div class="border-b border-slate-100 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Next expected movements</p><h3 class="mt-1 text-xl font-semibold text-slate-950">Prepare for what is coming</h3><p class="hint">Dates are windows, not promises. Open a series to inspect its evidence in Transactions.</p></div><Badge>{upcomingRecurring.length} upcoming</Badge></div></div>
+                    <div class="divide-y divide-slate-100">{#each upcomingRecurring as item}<div class="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center"><div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-primary"><CalendarClock size={18} /></div><div class="min-w-0 flex-1"><p class="truncate font-semibold text-slate-800">{item.label}</p><p class="mt-1 text-xs text-slate-500">{item.counterparty} · {cadenceLabel(item)} · {item.expectedDateFrom} to {item.expectedDateTo}</p></div><div class="flex items-center gap-3 sm:text-right"><div><p class={item.direction === 'expense' ? 'font-semibold text-slate-950' : 'font-semibold text-emerald-700'}>{recurringAmount(item)}</p><p class="mt-1 text-xs text-slate-400">{item.amountModel.kind.replace('-', ' ')}</p></div><Badge tone={confidenceTone(item.confidence)}>{item.confidence}</Badge></div></div>{:else}<p class="p-8 text-center text-sm text-slate-500">No recurring movements detected yet.</p>{/each}</div>
+                </Card>
+                <Card className="overflow-hidden p-0">
+                    <div class="border-b border-slate-100 p-5"><p class="label">Recurring inventory</p><h3 class="mt-1 text-xl font-semibold text-slate-950">Your repeating commitments and income</h3></div>
+                    <div class="overflow-x-auto"><table class="w-full min-w-[760px] text-left text-sm"><thead class="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-400"><tr><th class="px-5 py-3 font-bold">Payment</th><th class="px-5 py-3 font-bold">Cadence</th><th class="px-5 py-3 font-bold">Typical</th><th class="px-5 py-3 font-bold">Annualized</th><th class="px-5 py-3 font-bold">Next date</th><th class="px-5 py-3 font-bold">Evidence</th></tr></thead><tbody class="divide-y divide-slate-100">{#each recurring as item}<tr class="hover:bg-slate-50/70"><td class="px-5 py-4"><p class="font-semibold text-slate-800">{item.label}</p><p class="mt-1 text-xs text-slate-500">{item.counterparty} · {item.direction === 'expense' ? 'Expense' : 'Income'}</p></td><td class="px-5 py-4 text-slate-600">{cadenceLabel(item)}</td><td class={item.direction === 'expense' ? 'px-5 py-4 font-semibold text-slate-900' : 'px-5 py-4 font-semibold text-emerald-700'}>{recurringAmount(item)}<span class="ml-1 text-xs font-normal text-slate-400">{item.currency}</span></td><td class="px-5 py-4 text-slate-700">{money(item.amountModel.typicalAmount * (12 / item.intervalMonths))}</td><td class="px-5 py-4"><p class="font-medium text-slate-700">{dateLabel(item.nextExpectedDate)}</p><p class="mt-1 text-xs text-slate-400">± {item.anchor.toleranceDays} days</p></td><td class="px-5 py-4"><Badge tone={confidenceTone(item.confidence)}>{item.confidence}</Badge><p class="mt-1 text-xs text-slate-400">{item.evidence.occurrenceCount} observations</p></td></tr>{:else}<tr><td colspan="6" class="px-5 py-10 text-center text-sm text-slate-500">No recurring series found. More history makes yearly detections stronger.</td></tr>{/each}</tbody></table></div>
+                </Card>
             </section>
         {:else if page === 'aliases'}
             <section class="alias-page space-y-5 animate-float-in">

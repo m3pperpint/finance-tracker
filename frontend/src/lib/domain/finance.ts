@@ -36,12 +36,50 @@ export interface HighestSpendingDay {
     totalAmount: number
 }
 
-export type ViewMode = 'month' | 'year' | 'all'
+export type ViewMode = 'month' | 'year' | 'range' | 'all'
 
 export type FinanceScope =
     | { mode: 'month'; month: number; year: number }
     | { mode: 'year'; year: number }
+    | { mode: 'range'; from: string; to: string }
     | { mode: 'all' }
+
+export type RecurrenceCadence = 'monthly' | 'yearly'
+export type RecurrenceDirection = 'income' | 'expense'
+export type RecurrenceConfidence = 'candidate' | 'probable' | 'confirmed'
+
+export interface RecurringSeries {
+    id: string
+    direction: RecurrenceDirection
+    currency: string
+    counterparty: string
+    label: string
+    cadence: RecurrenceCadence
+    intervalMonths: 1 | 12
+    anchor: { day: number; toleranceDays: number; endOfMonth: boolean }
+    occurrences: { statementIndex: number; statementId: string; date: string; amount: number }[]
+    amountModel: {
+        kind: 'fixed' | 'inflation-adjusted' | 'variable'
+        typicalAmount: number
+        minimumAmount: number
+        maximumAmount: number
+        yearlyChange?: number
+    }
+    nextExpectedDate: string
+    expectedDateFrom: string
+    expectedDateTo: string
+    confidence: RecurrenceConfidence
+    evidence: {
+        occurrenceCount: number
+        coveredCycles: number
+        expectedCycles: number
+        skippedCycles: number
+        cadenceFit: number
+        dateFit: number
+        amountMedian: number
+        amountMad: number
+    }
+}
 
 export interface AvailablePeriods {
     firstMonth: string
