@@ -153,8 +153,10 @@
     }).filter((category) => category.difference != null).sort((a, b) => Math.abs(b.difference ?? 0) - Math.abs(a.difference ?? 0)).slice(0, 3) : []
     $: spendingRows = (dashboard?.categories ?? []).map((category) => {
         const usual = activePeriod ? usualAmount(comparisonPeriods.filter((period) => period.key !== activePeriodKey).map((period) => period.categories.find((item) => item.category === category.category)?.totalAmount ?? 0)) : null
-        return { ...category, usual, difference: usual == null ? null : category.totalAmount - usual }
+        const recurringExpected = expectedRecurringForCategory(category.category)
+        return { ...category, usual, recurringExpected, difference: usual == null ? null : category.totalAmount - usual }
     })
+    $: expectedRecurringTotal = recurringExpenses.reduce((total, series) => total + expectedRecurringForSeries(series), 0)
     $: if (!selectedSpendingCategory && spendingRows.length) selectedSpendingCategory = spendingRows[0].category
     $: if (selectedSpendingCategory && !spendingRows.some((item) => item.category === selectedSpendingCategory)) selectedSpendingCategory = spendingRows[0]?.category ?? ''
     $: scopedExpenseStatements = (rules?.statements ?? []).filter((statement) => statement.amount != null && statement.amount < 0 && statementInScope(statement.date))
@@ -288,6 +290,31 @@
             groups.set(key, current)
         }
         return [...groups.values()].sort((a, b) => b.total - a.total)
+    }
+
+    function expectedRecurringForCategory(category: string) {
+        return recurringExpenses
+            .filter((series) => series.category === category)
+            .reduce((total, series) => total + expectedRecurringForSeries(series), 0)
+    }
+
+    function expectedRecurringForSeries(series: RecurringSeries) {
+        if (mode === 'all') return 0
+        if (mode === 'month') {
+            if (series.cadence === 'monthly') return series.amountModel.typicalAmount
+            const anchorMonth = series.occurrences[0]?.date.slice(5, 7)
+            return anchorMonth === monthKey.slice(5, 7) ? series.amountModel.typicalAmount : 0
+        }
+        if (mode === 'year') return series.amountModel.typicalAmount * (12 / series.intervalMonths)
+        if (!isDateKey(fromDate) || !isDateKey(toDate)) return 0
+        const from = new Date(`${fromDate}T00:00:00`)
+        const to = new Date(`${toDate}T00:00:00`)
+        const anchorMonth = series.occurrences[0]?.date.slice(5, 7)
+        let count = 0
+        for (const cursor = new Date(from.getFullYear(), from.getMonth(), 1); cursor <= to; cursor.setMonth(cursor.getMonth() + 1)) {
+            if (series.cadence === 'monthly' || String(cursor.getMonth() + 1).padStart(2, '0') === anchorMonth) count += 1
+        }
+        return count * series.amountModel.typicalAmount
     }
 
     function monthLabel(key: string) {
@@ -674,11 +701,11 @@
                     <Card className="p-5"><p class="label">Actual spending</p><p class="metric">{money(dashboard?.metrics.spending)}</p><p class="hint">In the selected scope.</p></Card>
                     <Card className="p-5"><p class="label">Usual spending</p><p class="metric">{money(usualPeriodSpending)}</p><p class="hint">Median of comparable periods.</p></Card>
                     <Card className="p-5"><p class="label">Difference</p><p class={spendingDelta != null && spendingDelta > 0 ? 'metric text-amber-700' : 'metric text-emerald-700'}>{delta(spendingDelta)}</p><p class="hint">Compared with usual.</p></Card>
-                    <Card className="p-5"><p class="label">Recurring run-rate</p><p class="metric">{money(monthlyRecurringExpenses)}</p><p class="hint">Known recurring expenses per month.</p></Card>
+                    <Card className="p-5"><p class="label">Expected recurring</p><p class="metric">{mode === 'all' ? '—' : money(expectedRecurringTotal)}</p><p class="hint">Known recurring expenses in this scope.</p></Card>
                 </div>
                 <Card className="overflow-hidden p-0">
                     <div class="border-b border-slate-100 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Category comparison</p><h3 class="mt-1 text-xl font-semibold text-slate-950">What changed in this period?</h3><p class="hint">Select a category to inspect its merchants below.</p></div><Badge>{scopeLabel}</Badge></div></div>
-                    <div class="overflow-x-auto"><table class="w-full min-w-[720px] text-left text-sm"><thead class="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-400"><tr><th class="px-5 py-3 font-bold">Category</th><th class="px-5 py-3 font-bold">Actual</th><th class="px-5 py-3 font-bold">Usual</th><th class="px-5 py-3 font-bold">Difference</th><th class="px-5 py-3 font-bold">Share</th><th class="px-5 py-3 font-bold">Transactions</th></tr></thead><tbody class="divide-y divide-slate-100">{#each spendingRows as item}<tr class:bg-indigo-50={selectedSpendingCategory === item.category} class="cursor-pointer hover:bg-slate-50" onclick={() => selectedSpendingCategory = item.category}><td class="px-5 py-4"><button class="text-left font-semibold text-slate-800 hover:text-primary">{item.category}</button><p class="mt-1 text-xs text-slate-400">{item.control === 'committed' ? 'Committed' : item.control === 'influenceable' ? 'Influenceable' : 'Unclassified'} · {item.necessity === 'necessity' ? 'Necessary' : item.necessity === 'convenience' ? 'Convenience' : 'Unclassified'}</p></td><td class="px-5 py-4 font-semibold text-slate-950">{money(item.totalAmount)}</td><td class="px-5 py-4 text-slate-600">{money(item.usual)}</td><td class={item.difference != null && item.difference > 0 ? 'px-5 py-4 font-semibold text-amber-700' : 'px-5 py-4 font-semibold text-emerald-700'}>{delta(item.difference)}</td><td class="px-5 py-4 text-slate-600">{Math.round(item.shareOfSpending * 100)}%</td><td class="px-5 py-4 text-slate-600">{item.transactionCount}</td></tr>{:else}<tr><td colspan="6" class="px-5 py-10 text-center text-sm text-slate-500">No spending categories found for this scope.</td></tr>{/each}</tbody></table></div>
+                    <div class="overflow-x-auto"><table class="w-full min-w-[820px] text-left text-sm"><thead class="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-400"><tr><th class="px-5 py-3 font-bold">Category</th><th class="px-5 py-3 font-bold">Actual</th><th class="px-5 py-3 font-bold">Usual</th><th class="px-5 py-3 font-bold">Recurring expected</th><th class="px-5 py-3 font-bold">Difference</th><th class="px-5 py-3 font-bold">Share</th><th class="px-5 py-3 font-bold">Transactions</th></tr></thead><tbody class="divide-y divide-slate-100">{#each spendingRows as item}<tr class:bg-indigo-50={selectedSpendingCategory === item.category} class="cursor-pointer hover:bg-slate-50" onclick={() => selectedSpendingCategory = item.category}><td class="px-5 py-4"><button class="text-left font-semibold text-slate-800 hover:text-primary">{item.category}</button><p class="mt-1 text-xs text-slate-400">{item.control === 'committed' ? 'Committed' : item.control === 'influenceable' ? 'Influenceable' : 'Unclassified'} · {item.necessity === 'necessity' ? 'Necessary' : item.necessity === 'convenience' ? 'Convenience' : 'Unclassified'}</p></td><td class="px-5 py-4 font-semibold text-slate-950">{money(item.totalAmount)}</td><td class="px-5 py-4 text-slate-600">{money(item.usual)}</td><td class="px-5 py-4 text-slate-600">{mode === 'all' ? '—' : money(item.recurringExpected)}</td><td class={item.difference != null && item.difference > 0 ? 'px-5 py-4 font-semibold text-amber-700' : 'px-5 py-4 font-semibold text-emerald-700'}>{delta(item.difference)}</td><td class="px-5 py-4 text-slate-600">{Math.round(item.shareOfSpending * 100)}%</td><td class="px-5 py-4 text-slate-600">{item.transactionCount}</td></tr>{:else}<tr><td colspan="7" class="px-5 py-10 text-center text-sm text-slate-500">No spending categories found for this scope.</td></tr>{/each}</tbody></table></div>
                 </Card>
                 <Card className="overflow-hidden p-0">
                     <div class="border-b border-slate-100 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Merchant detail</p><h3 class="mt-1 text-xl font-semibold text-slate-950">{selectedSpendingCategory || 'Choose a category'}</h3><p class="hint">The largest merchants behind this category in {scopeLabel}.</p></div>{#if selectedSpendingCategory}<Badge>{money(spendingRows.find((item) => item.category === selectedSpendingCategory)?.totalAmount)} total</Badge>{/if}</div></div>
@@ -695,7 +722,7 @@
                 </div>
                 <Card className="overflow-hidden p-0">
                     <div class="border-b border-slate-100 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Next expected movements</p><h3 class="mt-1 text-xl font-semibold text-slate-950">Prepare for what is coming</h3><p class="hint">Dates are windows, not promises. Open a series to inspect its evidence in Transactions.</p></div><Badge>{upcomingRecurring.length} upcoming</Badge></div></div>
-                    <div class="divide-y divide-slate-100">{#each upcomingRecurring as item}<div class="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center"><div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-primary"><CalendarClock size={18} /></div><div class="min-w-0 flex-1"><p class="truncate font-semibold text-slate-800">{item.label}</p><p class="mt-1 text-xs text-slate-500">{item.counterparty} · {cadenceLabel(item)} · {item.expectedDateFrom} to {item.expectedDateTo}</p></div><div class="flex items-center gap-3 sm:text-right"><div><p class={item.direction === 'expense' ? 'font-semibold text-slate-950' : 'font-semibold text-emerald-700'}>{recurringAmount(item)}</p><p class="mt-1 text-xs text-slate-400">{item.amountModel.kind.replace('-', ' ')}</p></div><Badge tone={confidenceTone(item.confidence)}>{item.confidence}</Badge></div></div>{:else}<p class="p-8 text-center text-sm text-slate-500">No recurring movements detected yet.</p>{/each}</div>
+                    <div class="divide-y divide-slate-100">{#each upcomingRecurring as item}<div class="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center"><div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-primary"><CalendarClock size={18} /></div><div class="min-w-0 flex-1"><p class="truncate font-semibold text-slate-800">{item.label}</p><p class="mt-1 text-xs text-slate-500">{item.counterparty} · {item.category ?? 'Unclassified'} · {cadenceLabel(item)} · {item.expectedDateFrom} to {item.expectedDateTo}</p></div><div class="flex items-center gap-3 sm:text-right"><div><p class={item.direction === 'expense' ? 'font-semibold text-slate-950' : 'font-semibold text-emerald-700'}>{recurringAmount(item)}</p><p class="mt-1 text-xs text-slate-400">{item.amountModel.kind.replace('-', ' ')}</p></div><Badge tone={confidenceTone(item.confidence)}>{item.confidence}</Badge></div></div>{:else}<p class="p-8 text-center text-sm text-slate-500">No recurring movements detected yet.</p>{/each}</div>
                 </Card>
                 <Card className="overflow-hidden p-0">
                     <div class="border-b border-slate-100 p-5"><p class="label">Recurring inventory</p><h3 class="mt-1 text-xl font-semibold text-slate-950">Your repeating commitments and income</h3></div>
