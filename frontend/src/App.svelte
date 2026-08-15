@@ -163,7 +163,12 @@
         const recurringExpected = expectedRecurringForCategory(category.category)
         return { ...category, usual, recurringExpected, difference: usual == null ? null : category.totalAmount - usual }
     })
-    $: expectedRecurringTotal = recurringExpenses.reduce((total, series) => total + expectedRecurringForSeries(series), 0)
+    $: confirmedRecurring = activeRecurring.filter((series) => series.reviewStatus === 'confirmed')
+    $: expectedRecurringTotal = confirmedRecurring.reduce((total, series) => total + expectedRecurringForSeries(series), 0)
+    $: expectedMovements = remainingExpectedMovements()
+    $: expectedFixedExpenses = expectedMovements.filter((item) => item.series.direction === 'expense')
+    $: expectedFixedIncome = expectedMovements.filter((item) => item.series.direction === 'income')
+    $: estimatedFlexibleSpending = estimateRemainingFlexibleSpending()
     $: if (!selectedSpendingCategory && spendingRows.length) selectedSpendingCategory = spendingRows[0].category
     $: if (selectedSpendingCategory && !spendingRows.some((item) => item.category === selectedSpendingCategory)) selectedSpendingCategory = spendingRows[0]?.category ?? ''
     $: scopedExpenseStatements = (rules?.statements ?? []).filter((statement) => statement.amount != null && statement.amount < 0 && statementInScope(statement.date))
@@ -175,7 +180,6 @@
     $: manualRecurringStatements = rules?.statements.filter((statement) => statement.recurringDirection) ?? []
     $: monthlyRecurringExpenses = recurringExpenses.reduce((total, series) => total + series.amountModel.typicalAmount / series.intervalMonths, 0)
     $: annualRecurringExpenses = recurringExpenses.reduce((total, series) => total + series.amountModel.typicalAmount * (12 / series.intervalMonths), 0)
-    $: upcomingRecurring = [...activeRecurring].sort((a, b) => a.nextExpectedDate.localeCompare(b.nextExpectedDate)).slice(0, 5)
     $: if (!overallMonthKey && monthlyPeriods.length) overallMonthKey = monthlyPeriods.at(-1)?.key ?? ''
     $: if (overallMonthKey && monthlyPeriods.length && !monthlyPeriods.some((period) => period.key === overallMonthKey)) overallMonthKey = monthlyPeriods.at(-1)?.key ?? ''
     $: overallPeriod = monthlyPeriods.find((period) => period.key === overallMonthKey)
@@ -306,7 +310,7 @@
     }
 
     function expectedRecurringForCategory(category: string) {
-        return recurringExpenses
+        return confirmedRecurring
             .filter((series) => series.category === category)
             .reduce((total, series) => total + expectedRecurringForSeries(series), 0)
     }
@@ -328,6 +332,66 @@
             if (series.cadence === 'monthly' || String(cursor.getMonth() + 1).padStart(2, '0') === anchorMonth) count += 1
         }
         return count * series.amountModel.typicalAmount
+    }
+
+    function scopeWindow(): { from: Date; to: Date } | null {
+        if (mode === 'all') return null
+        if (mode === 'month' && /^\d{4}-\d{2}$/.test(monthKey)) {
+            const [selectedYear, selectedMonth] = monthKey.split('-').map(Number)
+            return { from: new Date(selectedYear, selectedMonth - 1, 1), to: new Date(selectedYear, selectedMonth, 0) }
+        }
+        if (mode === 'year' && Number.isInteger(year)) return { from: new Date(year, 0, 1), to: new Date(year, 11, 31) }
+        if (mode === 'range' && isDateKey(fromDate) && isDateKey(toDate) && fromDate <= toDate) return { from: dateValue(fromDate), to: dateValue(toDate) }
+        return null
+    }
+
+    function dateValue(value: string) {
+        return new Date(`${value}T00:00:00`)
+    }
+
+    function startOfToday() {
+        const today = new Date()
+        return new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    }
+
+    function addRecurringInterval(value: Date, intervalMonths: 1 | 12) {
+        const target = new Date(value.getFullYear(), value.getMonth() + intervalMonths, 1)
+        const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate()
+        return new Date(target.getFullYear(), target.getMonth(), Math.min(value.getDate(), lastDay))
+    }
+
+    function remainingExpectedMovements() {
+        const window = scopeWindow()
+        if (!window) return [] as { series: RecurringSeries; date: Date }[]
+        const start = window.from > startOfToday() ? window.from : startOfToday()
+        return confirmedRecurring.flatMap((series) => {
+            const movements: { series: RecurringSeries; date: Date }[] = []
+            let next = dateValue(series.nextExpectedDate)
+            while (next < start) next = addRecurringInterval(next, series.intervalMonths)
+            while (next <= window.to) {
+                movements.push({ series, date: next })
+                next = addRecurringInterval(next, series.intervalMonths)
+            }
+            return movements
+        }).sort((a, b) => a.date.getTime() - b.date.getTime())
+    }
+
+    function estimateRemainingFlexibleSpending() {
+        const window = scopeWindow()
+        if (!window || !monthlyPeriods.length) return null
+        const start = window.from > startOfToday() ? window.from : startOfToday()
+        if (start > window.to) return 0
+        const daysInWindow = Math.max(1, Math.round((window.to.getTime() - window.from.getTime()) / 86400000) + 1)
+        const remainingDays = Math.max(0, Math.round((window.to.getTime() - start.getTime()) / 86400000) + 1)
+        const recurringCategories = new Set(confirmedRecurring.map((series) => series.category).filter(Boolean))
+        const recentPeriods = monthlyPeriods.slice(-3)
+        const recentFlexibleAverage = recentPeriods.reduce((total, period) => total + period.categories.filter((item) => !recurringCategories.has(item.category)).reduce((sum, item) => sum + item.totalAmount, 0), 0) / recentPeriods.length
+        const windowMonths = daysInWindow / 30.4375
+        return recentFlexibleAverage * windowMonths * (remainingDays / daysInWindow)
+    }
+
+    function percentage(value: number, total: number) {
+        return total ? Math.round((value / total) * 100) : 0
     }
 
     function monthLabel(key: string) {
@@ -679,7 +743,7 @@
 
                 <div class="grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
                     <Card className="border-slate-200 bg-white p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Period at a glance</p><h2 class="mt-1 text-xl font-semibold text-slate-950">{spendingDelta == null ? 'Build your baseline' : spendingDelta >= 0 ? `${money(spendingDelta)} above usual` : `${money(Math.abs(spendingDelta))} below usual`}</h2><p class="hint">{usualPeriodSpending == null ? 'Select a month or year with enough history to compare.' : `Usual spending is ${money(usualPeriodSpending)} for this view.`}</p></div><Badge tone={spendingDelta != null && spendingDelta > 0 ? 'warning' : 'success'}>{spendingDelta == null ? 'No comparison' : spendingDelta > 0 ? 'Above usual' : 'On track'}</Badge></div>{#if topChanges.length}<div class="mt-5 space-y-3">{#each topChanges as item}<div class="flex items-center justify-between gap-3 text-sm"><span class="min-w-0 truncate font-medium text-slate-700">{item.category}</span><span class={item.difference && item.difference > 0 ? 'font-semibold text-amber-700' : 'font-semibold text-emerald-700'}>{delta(item.difference)}</span></div>{/each}</div>{:else}<p class="mt-5 text-sm text-slate-500">Your category comparison will appear once this period has a usable history.</p>{/if}</Card>
-                    <Card className="border-indigo-100 bg-indigo-50/50 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label text-indigo-500">Recurring outlook</p><h2 class="mt-1 text-xl font-semibold text-slate-950">{money(monthlyRecurringExpenses)} / month</h2><p class="hint">Detected recurring expenses · {money(annualRecurringExpenses)} annualized</p></div><button class="icon-button" title="Open recurring report" aria-label="Open recurring report" onclick={() => navigate('recurring')}><ArrowRight size={17} /></button></div><div class="mt-5 space-y-2">{#each upcomingRecurring.slice(0, 3) as item}<div class="flex items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2.5 text-sm"><span class="min-w-0 truncate font-medium text-slate-700">{item.label}</span><span class="shrink-0 text-xs font-semibold text-slate-500">{dateLabel(item.nextExpectedDate)} · {money(item.amountModel.typicalAmount)}</span></div>{:else}<p class="text-sm text-slate-500">No recurring series detected yet.</p>{/each}</div></Card>
+                    <Card className="border-indigo-100 bg-indigo-50/50 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label text-indigo-500">Cash flow pulse</p><h2 class="mt-1 text-xl font-semibold text-slate-950">{money(dashboard?.metrics.netMovement)} net</h2><p class="hint">Compare money in and money out for {scopeLabel.toLocaleLowerCase()}.</p></div><button class="icon-button" title="Open spending analysis" aria-label="Open spending analysis" onclick={() => navigate('spending')}><ArrowRight size={17} /></button></div><div class="mt-5 space-y-3"><button class="cashflow-row" onclick={() => navigate('spending')}><span><span class="cashflow-dot income"></span>Income</span><strong>{money(dashboard?.metrics.income)}</strong></button><div class="cashflow-track"><span class="cashflow-fill income" style={`width:${Math.max(4, ((dashboard?.metrics.income ?? 0) / Math.max(dashboard?.metrics.income ?? 0, dashboard?.metrics.spending ?? 0, 1)) * 100)}%`}></span></div><button class="cashflow-row" onclick={() => navigate('spending')}><span><span class="cashflow-dot spending"></span>Spending</span><strong>{money(dashboard?.metrics.spending)}</strong></button><div class="cashflow-track"><span class="cashflow-fill spending" style={`width:${Math.max(4, ((dashboard?.metrics.spending ?? 0) / Math.max(dashboard?.metrics.income ?? 0, dashboard?.metrics.spending ?? 0, 1)) * 100)}%`}></span></div></div></Card>
                 </div>
 
                 <div class="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
@@ -727,9 +791,19 @@
                                     <p class="label">Selected month</p>
                                     <p class="mt-1 text-lg font-semibold text-slate-950">{overallPeriod?.label ?? '—'}</p>
                                 </div>
-                                <Badge>{money(overallPeriod?.spending)} spent</Badge>
+                                <div class="text-right"><p class="label">Total spent</p><p class="mt-1 text-lg font-semibold text-slate-950">{money(overallPeriod?.spending)}</p></div>
                             </div>
-                            <div class="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+                            <div class="selected-breakdown" aria-label="Selected month spending split">
+                                <span class="selected-breakdown-segment necessity" style={`width:${percentage(necessityPeriod?.necessity ?? 0, overallPeriod?.spending ?? 0)}%`}></span>
+                                <span class="selected-breakdown-segment convenience" style={`width:${percentage(necessityPeriod?.convenience ?? 0, overallPeriod?.spending ?? 0)}%`}></span>
+                                <span class="selected-breakdown-segment unclassified" style={`width:${percentage(necessityPeriod?.unclassified ?? 0, overallPeriod?.spending ?? 0)}%`}></span>
+                            </div>
+                            <div class="mt-3 grid gap-2 sm:grid-cols-3 lg:grid-cols-1">
+                                <div class="breakdown-stat"><span><span class="dot emerald"></span>Necessity</span><strong>{money(necessityPeriod?.necessity)} <small>{percentage(necessityPeriod?.necessity ?? 0, overallPeriod?.spending ?? 0)}%</small></strong></div>
+                                <div class="breakdown-stat"><span><span class="dot violet"></span>Convenience</span><strong>{money(necessityPeriod?.convenience)} <small>{percentage(necessityPeriod?.convenience ?? 0, overallPeriod?.spending ?? 0)}%</small></strong></div>
+                                {#if (necessityPeriod?.unclassified ?? 0) > 0}<div class="breakdown-stat"><span><span class="dot unclassified-dot"></span>Unclassified</span><strong>{money(necessityPeriod?.unclassified)} <small>{percentage(necessityPeriod?.unclassified ?? 0, overallPeriod?.spending ?? 0)}%</small></strong></div>{/if}
+                            </div>
+                            <div class="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
                                 <div class="trend-stat"><span>Monthly average</span><strong>{money(comparisonAverage)}</strong></div>
                                 <div class="trend-stat"><span>{comparisonCategory || 'Category'} vs last month</span><strong>{delta(overallComparison?.previous == null ? null : (overallComparison?.amount ?? 0) - overallComparison.previous)}</strong></div>
                                 <div class="trend-stat"><span>{comparisonCategory || 'Category'} vs usual</span><strong>{delta(overallComparison?.usual == null ? null : (overallComparison?.amount ?? 0) - overallComparison.usual)}</strong></div>
@@ -759,7 +833,8 @@
             </section>
         {:else if page === 'spending'}
             <section class="space-y-5 animate-float-in">
-                <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge tone="success">Spending analysis</Badge><h2 class="mt-2 page-title">Where did the money go?</h2><p class="page-subtitle">Compare this period with what is usual, then open a category to see the merchants behind the change.</p></div><Button variant="outline" size="sm" onclick={() => navigate('dashboard')}>Change period <ArrowRight size={14} /></Button></div>
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge tone="success">Spending analysis</Badge><h2 class="mt-2 page-title">Where did the money go?</h2><p class="page-subtitle">Compare this period with what is usual, then open a category to see the merchants behind the change.</p></div><span class="text-xs font-semibold text-slate-400">{fileName}</span></div>
+                <Card className="flex flex-col gap-4 border-indigo-100 bg-indigo-50/60 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p class="label text-indigo-500">Analyze this timeframe</p><p class="mt-1 text-sm text-slate-700">Every number on this page follows the selected period.</p></div><div class="flex flex-wrap items-center gap-2"><div class="inline-flex rounded-xl bg-white/70 p-1">{#each [['month', 'Month'], ['year', 'Year'], ['range', 'Custom'], ['all', 'All time']] as option}<button class:active-mode={mode === option[0]} class="rounded-lg px-3 py-2 text-xs font-semibold text-slate-500 transition hover:text-slate-950" onclick={() => setMode(option[0] as ViewMode)}>{option[1]}</button>{/each}</div>{#if mode === 'month'}<div class="relative"><button class="field min-w-44 text-left">{scopeLabel}</button><input type="month" aria-label="Select month" bind:value={monthKey} min={dashboard?.availablePeriods.firstMonth} max={dashboard?.availablePeriods.lastMonth} onchange={chooseMonth} class="absolute inset-0 h-full w-full cursor-pointer opacity-0" /></div>{:else if mode === 'year'}<div class="relative"><button class="field min-w-28 text-left">{year}</button><select aria-label="Select year" bind:value={year} onchange={chooseYear} class="absolute inset-0 h-full w-full cursor-pointer opacity-0">{#each dashboard?.availablePeriods.years ?? [year] as availableYear}<option value={availableYear}>{availableYear}</option>{/each}</select></div>{:else if mode === 'range'}<div class="flex flex-wrap items-center gap-2"><input type="date" bind:value={fromDate} onchange={chooseRange} class="field" aria-label="Range start" /><span class="text-xs font-semibold text-slate-400">to</span><input type="date" bind:value={toDate} onchange={chooseRange} class="field" aria-label="Range end" /></div>{/if}</div></Card>
                 <Card className="flex flex-col gap-3 border-indigo-100 bg-indigo-50/60 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p class="label text-indigo-500">Current scope</p><p class="mt-1 text-lg font-semibold text-slate-950">{scopeLabel}</p></div><div class="flex flex-wrap gap-2 text-xs font-semibold text-slate-600"><span class="rounded-full bg-white/80 px-3 py-1.5">{spendingRows.length} categories</span><span class="rounded-full bg-white/80 px-3 py-1.5">{scopedExpenseStatements.length} transactions</span></div></Card>
                 <div class="grid gap-4 md:grid-cols-4">
                     <Card className="p-5"><p class="label">Actual spending</p><p class="metric">{money(dashboard?.metrics.spending)}</p><p class="hint">In the selected scope.</p></Card>
@@ -767,6 +842,7 @@
                     <Card className="p-5"><p class="label">Difference</p><p class={spendingDelta != null && spendingDelta > 0 ? 'metric text-amber-700' : 'metric text-emerald-700'}>{delta(spendingDelta)}</p><p class="hint">Compared with usual.</p></Card>
                     <Card className="p-5"><p class="label">Expected recurring</p><p class="metric">{mode === 'all' ? '—' : money(expectedRecurringTotal)}</p><p class="hint">Known recurring expenses in this scope.</p></Card>
                 </div>
+                <Card className="border-indigo-100 bg-indigo-50/40 p-5"><div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p class="label text-indigo-500">Remaining outlook</p><h3 class="mt-1 text-xl font-semibold text-slate-950">What is still likely in {scopeLabel.toLocaleLowerCase()}?</h3><p class="hint">Fixed movements use confirmed recurring series. Flexible spending is an estimate from the last three months.</p></div><Badge>{mode === 'all' ? 'Select a timeframe' : `${expectedFixedExpenses.length + expectedFixedIncome.length} fixed movements`}</Badge></div>{#if mode === 'all'}<p class="mt-4 rounded-xl bg-white/70 p-4 text-sm text-slate-600">Choose a month, year, or custom range to see the remaining expected amounts.</p>{:else}<div class="mt-5 grid gap-4 lg:grid-cols-2"><div class="rounded-2xl bg-white/80 p-4"><div class="flex items-center justify-between gap-3"><div><p class="label">Fixed / recurring</p><p class="mt-1 text-2xl font-semibold text-slate-950">{money(expectedFixedExpenses.reduce((total, item) => total + item.series.amountModel.typicalAmount, 0))}</p><p class="hint">Expected payments still ahead</p></div><div class="text-right"><p class="label text-emerald-600">Income</p><p class="mt-1 font-semibold text-emerald-700">+{money(expectedFixedIncome.reduce((total, item) => total + item.series.amountModel.typicalAmount, 0))}</p></div></div>{#if expectedFixedExpenses.length || expectedFixedIncome.length}<div class="mt-4 space-y-2">{#each [...expectedFixedExpenses, ...expectedFixedIncome].slice(0, 5) as item}<div class="flex items-center justify-between gap-3 text-sm"><span class="min-w-0 truncate font-medium text-slate-700">{item.series.label}</span><span class={item.series.direction === 'income' ? 'shrink-0 font-semibold text-emerald-700' : 'shrink-0 font-semibold text-slate-900'}>{item.series.direction === 'income' ? '+' : '−'}{money(item.series.amountModel.typicalAmount)} · {dateLabel(item.date.toISOString().slice(0, 10))}</span></div>{/each}</div>{:else}<p class="mt-4 text-sm text-slate-500">No confirmed recurring movements remain in this timeframe.</p>{/if}</div><div class="rounded-2xl bg-white/80 p-4"><p class="label">Flexible estimate</p><p class="mt-1 text-2xl font-semibold text-slate-950">{money(estimatedFlexibleSpending)}</p><p class="hint">Variable spending based on your average monthly habits over the last 3 months.</p><div class="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">This is a guide, not a promise. Groceries, dining, shopping, and other changing categories can move above or below it.</div></div></div>{/if}</Card>
                 <Card className="overflow-hidden p-0">
                     <div class="border-b border-slate-100 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Category comparison</p><h3 class="mt-1 text-xl font-semibold text-slate-950">What changed in this period?</h3><p class="hint">Select a category to inspect its merchants below.</p></div><Badge>{scopeLabel}</Badge></div></div>
                     <div class="overflow-x-auto"><table class="w-full min-w-[820px] text-left text-sm"><thead class="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-400"><tr><th class="px-5 py-3 font-bold">Category</th><th class="px-5 py-3 font-bold">Actual</th><th class="px-5 py-3 font-bold">Usual</th><th class="px-5 py-3 font-bold">Recurring expected</th><th class="px-5 py-3 font-bold">Difference</th><th class="px-5 py-3 font-bold">Share</th><th class="px-5 py-3 font-bold">Transactions</th></tr></thead><tbody class="divide-y divide-slate-100">{#each spendingRows as item}<tr class:bg-indigo-50={selectedSpendingCategory === item.category} class="cursor-pointer hover:bg-slate-50" onclick={() => selectedSpendingCategory = item.category}><td class="px-5 py-4"><button class="text-left font-semibold text-slate-800 hover:text-primary">{item.category}</button><p class="mt-1 text-xs text-slate-400">{item.control === 'committed' ? 'Committed' : item.control === 'influenceable' ? 'Influenceable' : 'Unclassified'} · {item.necessity === 'necessity' ? 'Necessary' : item.necessity === 'convenience' ? 'Convenience' : 'Unclassified'}</p></td><td class="px-5 py-4 font-semibold text-slate-950">{money(item.totalAmount)}</td><td class="px-5 py-4 text-slate-600">{money(item.usual)}</td><td class="px-5 py-4 text-slate-600">{mode === 'all' ? '—' : money(item.recurringExpected)}</td><td class={item.difference != null && item.difference > 0 ? 'px-5 py-4 font-semibold text-amber-700' : 'px-5 py-4 font-semibold text-emerald-700'}>{delta(item.difference)}</td><td class="px-5 py-4 text-slate-600">{Math.round(item.shareOfSpending * 100)}%</td><td class="px-5 py-4 text-slate-600">{item.transactionCount}</td></tr>{:else}<tr><td colspan="7" class="px-5 py-10 text-center text-sm text-slate-500">No spending categories found for this scope.</td></tr>{/each}</tbody></table></div>
@@ -841,9 +917,9 @@
             </section>
         {:else}
             <section class="space-y-5 animate-float-in">
-                <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><Badge tone={unmatched.length || conflicts.length ? 'danger' : 'success'}>{unmatched.length || conflicts.length ? `${unmatched.length + conflicts.length} need attention` : 'All clear'}</Badge><h2 class="mt-2 page-title">Review the edges.</h2><p class="page-subtitle">Unmatched statements need a new alias. Conflicts need a sharper rule so every statement lands exactly once.</p></div><div class="flex items-center gap-2"><span class="text-xs font-semibold text-slate-500">Quick-create into</span><select bind:value={quickCategoryId} class="field w-48" aria-label="Quick create category">{#each categories as category}<option value={category.id}>{category.name}</option>{/each}</select></div></div>
+                <div><Badge tone={unmatched.length || conflicts.length ? 'danger' : 'success'}>{unmatched.length || conflicts.length ? `${unmatched.length + conflicts.length} need attention` : 'All clear'}</Badge><h2 class="mt-2 page-title">Review the edges.</h2><p class="page-subtitle">Unmatched statements need a new alias. Conflicts need a sharper rule so every statement lands exactly once.</p></div>
                 <div class="grid gap-4 md:grid-cols-3"><Card className="p-4"><p class="label">Unmatched</p><p class="mt-2 text-2xl font-semibold text-amber-600">{unmatched.length}</p><p class="hint">No alias grips this row</p></Card><Card className="p-4"><p class="label">Conflicts</p><p class="mt-2 text-2xl font-semibold text-red-600">{conflicts.length}</p><p class="hint">More than one alias grips it</p></Card><Card className="p-4"><p class="label">Goal</p><p class="mt-2 text-2xl font-semibold text-emerald-700">100%</p><p class="hint">Exactly one alias per statement</p></Card></div>
-                <Card className="overflow-hidden p-0"><div class="border-b border-slate-100 px-5 py-4"><h3 class="section-title">No alias found</h3><p class="hint">Quick-create a focused alias from the description or transaction type.</p></div><div class="divide-y divide-slate-100">{#each unmatched as item}<div class="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div class="min-w-0"><p class="truncate font-semibold text-slate-800">{item.text || item.transactionType || 'Untitled statement'}</p><p class="mt-1 text-xs text-slate-500">{item.transactionType || 'Unknown type'} · {money(item.amount)} · {item.date ? new Date(item.date).toLocaleDateString('en-GB') : 'No date'}</p></div><Button size="sm" variant="outline" onclick={() => quickCreate(item)} disabled={saving}><WandSparkles size={14} />Create alias</Button></div>{:else}<p class="p-6 text-sm text-emerald-700">Every statement has at least one alias.</p>{/each}</div></Card>
+                <Card className="overflow-hidden p-0"><div class="border-b border-slate-100 px-5 py-4"><div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><h3 class="section-title">No alias found</h3><p class="hint">Create a focused alias from the description or transaction type. The category below is where those new aliases will be saved.</p></div>{#if unmatched.length}<label class="flex shrink-0 items-center gap-2 text-xs font-semibold text-slate-500">New aliases go to<select bind:value={quickCategoryId} class="field h-9 w-48" aria-label="Category for new aliases">{#each categories as category}<option value={category.id}>{category.name}</option>{/each}</select></label>{/if}</div></div><div class="divide-y divide-slate-100">{#each unmatched as item}<div class="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div class="min-w-0"><p class="truncate font-semibold text-slate-800">{item.text || item.transactionType || 'Untitled statement'}</p><p class="mt-1 text-xs text-slate-500">{item.transactionType || 'Unknown type'} · {money(item.amount)} · {item.date ? new Date(item.date).toLocaleDateString('en-GB') : 'No date'}</p></div><Button size="sm" variant="outline" onclick={() => quickCreate(item)} disabled={saving}><WandSparkles size={14} />Create alias</Button></div>{:else}<p class="p-6 text-sm text-emerald-700">Every statement has at least one alias.</p>{/each}</div></Card>
                 <Card className="overflow-hidden border-red-100 p-0"><div class="border-b border-red-100 bg-red-50/50 px-5 py-4"><h3 class="section-title">Overlapping aliases</h3><p class="hint">These rows have more than one match. Narrow one alias by type or pin the chosen rule to this statement.</p></div><div class="divide-y divide-slate-100">{#each conflicts as item}<div class="px-5 py-4"><div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p class="font-semibold text-slate-800">{item.text || item.transactionType || 'Untitled statement'}</p><p class="mt-1 text-xs text-slate-500">{item.transactionType || 'Unknown type'} · {money(item.amount)}</p></div><Badge tone="danger">{item.matches.length} matches</Badge></div><div class="mt-3 flex flex-wrap gap-2">{#each item.matches as match}<span class="rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700">{match.value} → {categoryName(match.categoryId)}</span>{/each}</div><div class="mt-4 flex flex-wrap gap-2"><span class="mr-1 flex items-center gap-1 text-xs font-semibold text-slate-500"><ChevronDown size={14} />Resolve</span>{#each item.matches as match}<Button size="sm" variant="outline" onclick={() => pinAlias(item, match.id)} disabled={saving}><Settings2 size={13} />Pin “{match.value}”</Button>{/each}<button class="text-xs font-semibold text-primary hover:underline" onclick={() => openNewAlias(item.text)}>Edit aliases</button></div></div>{:else}<p class="p-6 text-sm text-emerald-700">No overlapping aliases found.</p>{/each}</div></Card>
             </section>
         {/if}

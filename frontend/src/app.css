@@ -122,6 +122,26 @@
 .trend-stat { @apply flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 text-xs; }
 .trend-stat span { @apply text-slate-500; }
 .trend-stat strong { @apply text-sm font-semibold text-slate-950; }
+.selected-breakdown { @apply flex h-4 overflow-hidden rounded-full bg-slate-100; }
+.selected-breakdown-segment { @apply block h-full transition-all duration-300; }
+.selected-breakdown-segment.necessity { @apply bg-emerald-400; }
+.selected-breakdown-segment.convenience { @apply bg-violet-400; }
+.selected-breakdown-segment.unclassified { @apply bg-slate-300; }
+.breakdown-stat { @apply flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2.5 text-xs; }
+.breakdown-stat > span { @apply flex items-center gap-2 text-slate-500; }
+.breakdown-stat strong { @apply text-right text-sm font-semibold text-slate-950; }
+.breakdown-stat small { @apply ml-1 text-[11px] font-normal text-slate-400; }
+.unclassified-dot { @apply bg-slate-300; }
+.cashflow-row { @apply flex w-full items-center justify-between text-sm transition hover:text-primary; }
+.cashflow-row > span { @apply flex items-center gap-2 font-medium text-slate-700; }
+.cashflow-row strong { @apply font-semibold text-slate-950; }
+.cashflow-dot { @apply h-2.5 w-2.5 rounded-full; }
+.cashflow-dot.income { @apply bg-emerald-400; }
+.cashflow-dot.spending { @apply bg-amber-400; }
+.cashflow-track { @apply h-2 overflow-hidden rounded-full bg-white/80; }
+.cashflow-fill { @apply block h-full rounded-full transition-all duration-500; }
+.cashflow-fill.income { @apply bg-emerald-400; }
+.cashflow-fill.spending { @apply bg-amber-400; }
 .filter-chip { @apply inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500 transition hover:border-indigo-200 hover:text-slate-950; }
 .filter-chip span { @apply rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-400; }
 .active-filter { @apply border-indigo-200 bg-indigo-50 text-indigo-700; }
