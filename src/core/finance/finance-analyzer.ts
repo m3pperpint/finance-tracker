@@ -183,6 +183,10 @@ export class FinanceAnalyzer {
 
         return this.statements.filter((statement) => {
             if (!statement.date) return false
+            if (scope.mode === 'range') {
+                const key = this.dateKey(statement.date)
+                return key >= scope.from && key <= scope.to
+            }
             if (scope.mode === 'year') {
                 return statement.date.getFullYear() === scope.year
             }
@@ -272,6 +276,10 @@ export class FinanceAnalyzer {
 
     private monthKey(year: number, month: number): string {
         return `${year}-${String(month).padStart(2, '0')}`
+    }
+
+    private dateKey(date: Date): string {
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
     }
 
     private monthLabel(year: number, month: number): string {

@@ -68,6 +68,8 @@ export class FinanceController {
         @Query('mode') mode = 'month',
         @Query('month') month?: string,
         @Query('year') year?: string,
+        @Query('from') from?: string,
+        @Query('to') to?: string,
         @Query('top') top = '5'
     ) {
         const requestedTop = Number(top)
@@ -77,7 +79,7 @@ export class FinanceController {
 
         return this.financeService.getDashboard(
             this.getFilePath(fileName),
-            this.parseScope(mode, month, year),
+            this.parseScope(mode, month, year, from, to),
             requestedTop
         )
     }
@@ -85,6 +87,11 @@ export class FinanceController {
     @Get('rules/:fileName')
     getRules(@Param('fileName') fileName: string) {
         return this.financeService.getRules(this.getFilePath(fileName))
+    }
+
+    @Get('recurring/:fileName')
+    getRecurring(@Param('fileName') fileName: string) {
+        return this.financeService.getRecurring(this.getFilePath(fileName))
     }
 
     @Post('categories')
@@ -219,9 +226,18 @@ export class FinanceController {
     private parseScope(
         mode: string,
         month?: string,
-        year?: string
+        year?: string,
+        from?: string,
+        to?: string
     ): FinanceScope {
         if (mode === 'all') return { mode: 'all' }
+
+        if (mode === 'range') {
+            if (!this.isDateKey(from) || !this.isDateKey(to) || from > to) {
+                throw new BadRequestException('from and to must be valid dates with from before to')
+            }
+            return { mode: 'range', from, to }
+        }
 
         const current = new Date()
         const requestedYear = Number(year ?? current.getFullYear())
@@ -240,5 +256,12 @@ export class FinanceController {
         }
 
         return { mode: 'month', month: requestedMonth, year: requestedYear }
+    }
+
+    private isDateKey(value: string | undefined): value is string {
+        if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+        const [year, month, day] = value.split('-').map(Number)
+        const date = new Date(year, month - 1, day)
+        return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
     }
 }

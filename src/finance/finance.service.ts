@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common'
 import { FinanceAnalyzer, BankStatement, FinanceScope } from '../core'
 import { CsvParserService } from '../csv-parser/csv-parser.service'
 import { mapRowToBankStatement } from '../core/common/helpers/finance-mapping.helper'
+import { detectRecurring } from '../core/finance/recurrence-analyzer.js'
+import { statementId } from '../core/finance/rule-model.js'
 import { basename } from 'path'
 import { RuleStoreService } from './rule-store.service.js'
 
@@ -38,6 +40,14 @@ export class FinanceService {
     getRules(file: string) {
         const statements = this.parseFile(file)
         return this.ruleStore.getRules(basename(file), statements)
+    }
+
+    getRecurring(file: string) {
+        const statements = this.parseFile(file)
+        const fileName = basename(file)
+        return detectRecurring(statements, {
+            getStatementId: (index) => statementId(fileName, index),
+        })
     }
 
     createCategory(name: string, necessity: 'necessity' | 'convenience') {

@@ -74,4 +74,15 @@ describe('FinanceAnalyzer dashboard scopes', () => {
             }),
         ])
     })
+
+    it('supports an explicit date range', () => {
+        const scoped = analyzer.getDashboard(
+            { mode: 'range', from: '2025-01-10', to: '2025-02-01' },
+            5
+        )
+
+        expect(scoped.transactionTypes).toEqual([
+            { transaction_type: 'Salary', totalAmount: 1000 },
+        ])
+    })
 })

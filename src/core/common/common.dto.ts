@@ -50,6 +50,7 @@ export interface SpendingCategoryReport extends SpendingCategoryDefinition {
 export type FinanceScope =
     | { mode: 'month'; month: number; year: number }
     | { mode: 'year'; year: number }
+    | { mode: 'range'; from: string; to: string }
     | { mode: 'all' }
 
 export interface AvailablePeriods {
