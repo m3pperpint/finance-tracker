@@ -45,8 +45,26 @@ export class FinanceService {
     getRecurring(file: string) {
         const statements = this.parseFile(file)
         const fileName = basename(file)
+        const resolver = this.ruleStore.getCategoryResolver(fileName, statements)
+        const definitions = this.ruleStore.getCategoryDefinitions(fileName, statements)
         return detectRecurring(statements, {
             getStatementId: (index) => statementId(fileName, index),
+        }).map((series) => {
+            const categoryCounts = new Map<string, number>()
+            for (const occurrence of series.occurrences) {
+                const category = resolver(statements[occurrence.statementIndex], occurrence.statementIndex)
+                if (category) categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1)
+            }
+            const category = [...categoryCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+            const definition = definitions.find((item) => item.category === category)
+            return {
+                ...series,
+                ...(category ? {
+                    category,
+                    necessity: definition?.necessity ?? 'unclassified',
+                    control: definition?.control ?? 'unclassified',
+                } : {}),
+            }
         })
     }
 

@@ -27,6 +27,9 @@ export interface RecurringSeries {
     currency: string
     counterparty: string
     label: string
+    category?: string
+    necessity?: 'necessity' | 'convenience' | 'unclassified'
+    control?: 'committed' | 'influenceable' | 'unclassified'
     cadence: RecurrenceCadence
     intervalMonths: 1 | 12
     anchor: {

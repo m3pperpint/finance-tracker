@@ -31,8 +31,8 @@
     import Button from '$lib/components/ui/Button.svelte'
     import Card from '$lib/components/ui/Card.svelte'
 
-    type Page = 'dashboard' | 'recurring' | 'statements' | 'aliases' | 'categories' | 'review'
-    const pageRoutes: Page[] = ['dashboard', 'recurring', 'review', 'aliases', 'categories', 'statements']
+    type Page = 'dashboard' | 'spending' | 'recurring' | 'statements' | 'aliases' | 'categories' | 'review'
+    const pageRoutes: Page[] = ['dashboard', 'spending', 'recurring', 'review', 'aliases', 'categories', 'statements']
     type Necessity = 'necessity' | 'convenience'
     type AliasSort = 'usage-desc' | 'usage-asc' | 'name-asc' | 'name-desc'
     type AliasUsageFilter = 'all' | 'used' | 'unused'
@@ -111,6 +111,7 @@
     let newCategory = { name: '', necessity: 'necessity' as Necessity }
     let draggedCategoryId = ''
     let comparisonCategory = ''
+    let selectedSpendingCategory = ''
     let overallMonthKey = ''
     let statementSearch = ''
     let statementFilter: 'all' | 'matched' | 'unmatched' | 'conflict' = 'all'
@@ -150,6 +151,15 @@
         const usual = usualAmount(comparisonPeriods.filter((period) => period.key !== activePeriodKey).map((period) => period.categories.find((item) => item.category === category.category)?.totalAmount ?? 0))
         return { ...category, usual, difference: usual == null ? null : category.totalAmount - usual }
     }).filter((category) => category.difference != null).sort((a, b) => Math.abs(b.difference ?? 0) - Math.abs(a.difference ?? 0)).slice(0, 3) : []
+    $: spendingRows = (dashboard?.categories ?? []).map((category) => {
+        const usual = activePeriod ? usualAmount(comparisonPeriods.filter((period) => period.key !== activePeriodKey).map((period) => period.categories.find((item) => item.category === category.category)?.totalAmount ?? 0)) : null
+        return { ...category, usual, difference: usual == null ? null : category.totalAmount - usual }
+    })
+    $: if (!selectedSpendingCategory && spendingRows.length) selectedSpendingCategory = spendingRows[0].category
+    $: if (selectedSpendingCategory && !spendingRows.some((item) => item.category === selectedSpendingCategory)) selectedSpendingCategory = spendingRows[0]?.category ?? ''
+    $: scopedExpenseStatements = (rules?.statements ?? []).filter((statement) => statement.amount != null && statement.amount < 0 && statementInScope(statement.date))
+    $: merchantRows = buildMerchantRows(scopedExpenseStatements)
+    $: selectedMerchantRows = merchantRows.filter((merchant) => merchant.category === selectedSpendingCategory).slice(0, 8)
     $: recurringExpenses = recurring.filter((series) => series.direction === 'expense')
     $: recurringIncome = recurring.filter((series) => series.direction === 'income')
     $: monthlyRecurringExpenses = recurringExpenses.reduce((total, series) => total + series.amountModel.typicalAmount / series.intervalMonths, 0)
@@ -247,6 +257,37 @@
         if (!/^\d{4}-\d{2}$/.test(monthKey)) return { mode: 'all' }
         const [selectedYear, selectedMonth] = monthKey.split('-').map(Number)
         return { mode: 'month', year: selectedYear, month: selectedMonth }
+    }
+
+    function statementInScope(value: string | undefined) {
+        if (!value) return false
+        const key = value.slice(0, 10)
+        if (mode === 'all') return true
+        if (mode === 'month') return key.startsWith(monthKey)
+        if (mode === 'year') return key.startsWith(String(year))
+        return isDateKey(fromDate) && isDateKey(toDate) && key >= fromDate && key <= toDate
+    }
+
+    function statementCategory(statement: RuleStatement) {
+        return statement.matches.length ? categoryName(statement.matches[0].categoryId) : statement.sourceCategory || 'Uncategorized'
+    }
+
+    function merchantLabel(statement: RuleStatement) {
+        return (statement.recipient || statement.sender || statement.text || statement.purpose || 'Unknown merchant').replace(/\s+/g, ' ').trim()
+    }
+
+    function buildMerchantRows(statements: RuleStatement[]) {
+        const groups = new Map<string, { merchant: string; category: string; total: number; count: number }>()
+        for (const statement of statements) {
+            const merchant = merchantLabel(statement)
+            const category = statementCategory(statement)
+            const key = `${category}|${merchant}`
+            const current = groups.get(key) ?? { merchant, category, total: 0, count: 0 }
+            current.total += Math.abs(statement.amount ?? 0)
+            current.count += 1
+            groups.set(key, current)
+        }
+        return [...groups.values()].sort((a, b) => b.total - a.total)
     }
 
     function monthLabel(key: string) {
@@ -534,6 +575,7 @@
 
         <nav class="mb-6 flex gap-1 overflow-x-auto rounded-2xl border border-white/80 bg-white/70 p-1.5 shadow-sm backdrop-blur" aria-label="Main navigation">
             <button class:active-tab={page === 'dashboard'} class="tab" onclick={() => navigate('dashboard')}><LayoutDashboard size={16} />Overview</button>
+            <button class:active-tab={page === 'spending'} class="tab" onclick={() => navigate('spending')}><ArrowDownUp size={16} />Spending</button>
             <button class:active-tab={page === 'recurring'} class="tab" onclick={() => navigate('recurring')}><CalendarClock size={16} />Recurring {#if recurring.length}<span class="tab-count">{recurring.length}</span>{/if}</button>
             <button class:active-tab={page === 'review'} class="tab" onclick={() => navigate('review')}><AlertTriangle size={16} />Review {#if unmatched.length + conflicts.length}<span class="tab-count danger-count">{unmatched.length + conflicts.length}</span>{/if}</button>
             <button class:active-tab={page === 'aliases'} class="tab" onclick={() => navigate('aliases')}><Tag size={16} />Aliases <span class="tab-count">{aliases.length}</span></button>
@@ -623,6 +665,25 @@
                     </div>
                 </Card>
                 <Card className="overflow-hidden p-0"><div class="border-b border-slate-100 p-5"><div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><div class="flex items-center gap-2"><h3 class="section-title">Necessity vs convenience</h3><Badge>Monthly</Badge></div><p class="hint">How your spending mix changes month by month. Click a bar to inspect its totals.</p></div><div class="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500"><span class="flex items-center gap-1.5"><span class="dot emerald"></span>Necessity</span><span class="flex items-center gap-1.5"><span class="dot violet"></span>Convenience</span>{#if necessityPeriods.some((period) => period.unclassified > 0)}<span class="flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-full bg-slate-300"></span>Unclassified</span>{/if}</div></div><div class="necessity-chart" role="img" aria-label="Monthly necessity and convenience spending chart">{#each necessityPeriods as period}<button class:chart-bar-selected={period.key === overallMonthKey} class="necessity-bar" aria-label={`${period.label}: ${money(period.necessity)} necessity, ${money(period.convenience)} convenience`} aria-pressed={period.key === overallMonthKey} onclick={() => overallMonthKey = period.key}><span class="necessity-value">{compactMoney(period.spending)}</span><span class="necessity-track" style={`height:${Math.max(4, (period.spending / maxNecessitySpending) * 100)}%`}><span class="necessity-segment necessity" style={`height:${period.spending ? (period.necessity / period.spending) * 100 : 0}%`}></span><span class="necessity-segment convenience" style={`height:${period.spending ? (period.convenience / period.spending) * 100 : 0}%`}></span><span class="necessity-segment unclassified" style={`height:${period.spending ? (period.unclassified / period.spending) * 100 : 0}%`}></span></span><span class="chart-label">{period.label.split(' ')[0]}</span></button>{:else}<p class="hint">No monthly category data available.</p>{/each}</div><div class="grid gap-3 border-t border-slate-100 p-5 sm:grid-cols-3"><div class="trend-stat"><span>{necessityPeriod?.label ?? 'Selected month'} · Necessity</span><strong class="text-emerald-700">{money(necessityPeriod?.necessity)}</strong></div><div class="trend-stat"><span>{necessityPeriod?.label ?? 'Selected month'} · Convenience</span><strong class="text-violet-700">{money(necessityPeriod?.convenience)}</strong></div><div class="trend-stat"><span>Convenience share</span><strong>{necessityPeriod?.spending ? `${Math.round((necessityPeriod.convenience / necessityPeriod.spending) * 100)}%` : '—'}</strong></div></div></div></Card>
+            </section>
+        {:else if page === 'spending'}
+            <section class="space-y-5 animate-float-in">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><Badge tone="success">Spending analysis</Badge><h2 class="mt-2 page-title">Where did the money go?</h2><p class="page-subtitle">Compare this period with what is usual, then open a category to see the merchants behind the change.</p></div><Button variant="outline" size="sm" onclick={() => navigate('dashboard')}>Change period <ArrowRight size={14} /></Button></div>
+                <Card className="flex flex-col gap-3 border-indigo-100 bg-indigo-50/60 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p class="label text-indigo-500">Current scope</p><p class="mt-1 text-lg font-semibold text-slate-950">{scopeLabel}</p></div><div class="flex flex-wrap gap-2 text-xs font-semibold text-slate-600"><span class="rounded-full bg-white/80 px-3 py-1.5">{spendingRows.length} categories</span><span class="rounded-full bg-white/80 px-3 py-1.5">{scopedExpenseStatements.length} transactions</span></div></Card>
+                <div class="grid gap-4 md:grid-cols-4">
+                    <Card className="p-5"><p class="label">Actual spending</p><p class="metric">{money(dashboard?.metrics.spending)}</p><p class="hint">In the selected scope.</p></Card>
+                    <Card className="p-5"><p class="label">Usual spending</p><p class="metric">{money(usualPeriodSpending)}</p><p class="hint">Median of comparable periods.</p></Card>
+                    <Card className="p-5"><p class="label">Difference</p><p class={spendingDelta != null && spendingDelta > 0 ? 'metric text-amber-700' : 'metric text-emerald-700'}>{delta(spendingDelta)}</p><p class="hint">Compared with usual.</p></Card>
+                    <Card className="p-5"><p class="label">Recurring run-rate</p><p class="metric">{money(monthlyRecurringExpenses)}</p><p class="hint">Known recurring expenses per month.</p></Card>
+                </div>
+                <Card className="overflow-hidden p-0">
+                    <div class="border-b border-slate-100 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Category comparison</p><h3 class="mt-1 text-xl font-semibold text-slate-950">What changed in this period?</h3><p class="hint">Select a category to inspect its merchants below.</p></div><Badge>{scopeLabel}</Badge></div></div>
+                    <div class="overflow-x-auto"><table class="w-full min-w-[720px] text-left text-sm"><thead class="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-400"><tr><th class="px-5 py-3 font-bold">Category</th><th class="px-5 py-3 font-bold">Actual</th><th class="px-5 py-3 font-bold">Usual</th><th class="px-5 py-3 font-bold">Difference</th><th class="px-5 py-3 font-bold">Share</th><th class="px-5 py-3 font-bold">Transactions</th></tr></thead><tbody class="divide-y divide-slate-100">{#each spendingRows as item}<tr class:bg-indigo-50={selectedSpendingCategory === item.category} class="cursor-pointer hover:bg-slate-50" onclick={() => selectedSpendingCategory = item.category}><td class="px-5 py-4"><button class="text-left font-semibold text-slate-800 hover:text-primary">{item.category}</button><p class="mt-1 text-xs text-slate-400">{item.control === 'committed' ? 'Committed' : item.control === 'influenceable' ? 'Influenceable' : 'Unclassified'} · {item.necessity === 'necessity' ? 'Necessary' : item.necessity === 'convenience' ? 'Convenience' : 'Unclassified'}</p></td><td class="px-5 py-4 font-semibold text-slate-950">{money(item.totalAmount)}</td><td class="px-5 py-4 text-slate-600">{money(item.usual)}</td><td class={item.difference != null && item.difference > 0 ? 'px-5 py-4 font-semibold text-amber-700' : 'px-5 py-4 font-semibold text-emerald-700'}>{delta(item.difference)}</td><td class="px-5 py-4 text-slate-600">{Math.round(item.shareOfSpending * 100)}%</td><td class="px-5 py-4 text-slate-600">{item.transactionCount}</td></tr>{:else}<tr><td colspan="6" class="px-5 py-10 text-center text-sm text-slate-500">No spending categories found for this scope.</td></tr>{/each}</tbody></table></div>
+                </Card>
+                <Card className="overflow-hidden p-0">
+                    <div class="border-b border-slate-100 p-5"><div class="flex items-start justify-between gap-4"><div><p class="label">Merchant detail</p><h3 class="mt-1 text-xl font-semibold text-slate-950">{selectedSpendingCategory || 'Choose a category'}</h3><p class="hint">The largest merchants behind this category in {scopeLabel}.</p></div>{#if selectedSpendingCategory}<Badge>{money(spendingRows.find((item) => item.category === selectedSpendingCategory)?.totalAmount)} total</Badge>{/if}</div></div>
+                    <div class="divide-y divide-slate-100">{#each selectedMerchantRows as merchant}<div class="flex items-center gap-4 px-5 py-4"><div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-600"><ArrowDownUp size={16} /></div><div class="min-w-0 flex-1"><p class="truncate font-semibold text-slate-800">{merchant.merchant}</p><p class="mt-1 text-xs text-slate-500">{merchant.count} transaction{merchant.count === 1 ? '' : 's'}</p></div><p class="font-semibold text-slate-950">{money(merchant.total)}</p></div>{:else}<p class="p-8 text-center text-sm text-slate-500">No merchant details available for this category.</p>{/each}</div>
+                </Card>
             </section>
         {:else if page === 'recurring'}
             <section class="space-y-5 animate-float-in">

@@ -54,6 +54,9 @@ export interface RecurringSeries {
     currency: string
     counterparty: string
     label: string
+    category?: string
+    necessity?: SpendingNecessity
+    control?: SpendingControl
     cadence: RecurrenceCadence
     intervalMonths: 1 | 12
     anchor: { day: number; toleranceDays: number; endOfMonth: boolean }
