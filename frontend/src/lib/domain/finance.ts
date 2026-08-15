@@ -49,12 +49,32 @@ export type RecurrenceDirection = 'income' | 'expense'
 export type RecurrenceConfidence = 'candidate' | 'probable' | 'confirmed'
 export type RecurringReviewStatus = 'pending' | 'confirmed' | 'denied'
 
+export interface RecurringMergeGroup {
+    id: string
+    seriesIds: string[]
+}
+
+export interface RecurringSettings {
+    aliases: Record<string, string>
+    groups: RecurringMergeGroup[]
+    observationIds: Record<string, string[]>
+}
+
+export interface RecurringObservationScan {
+    beforeCount: number
+    afterCount: number
+    addedCount: number
+    removedCount: number
+    includedStatementIds: string[]
+}
+
 export interface RecurringSeries {
     id: string
     direction: RecurrenceDirection
     currency: string
     counterparty: string
     label: string
+    alias?: string
     category?: string
     necessity?: SpendingNecessity
     control?: SpendingControl

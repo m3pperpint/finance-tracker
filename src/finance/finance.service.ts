@@ -47,6 +47,7 @@ export class FinanceService {
         const fileName = basename(file)
         const resolver = this.ruleStore.getCategoryResolver(fileName, statements)
         const definitions = this.ruleStore.getCategoryDefinitions(fileName, statements)
+        const settings = this.ruleStore.getRecurringSettings(fileName)
         return detectRecurring(statements, {
             getStatementId: (index) => statementId(fileName, index),
         }).map((series) => {
@@ -59,6 +60,7 @@ export class FinanceService {
             const definition = definitions.find((item) => item.category === category)
             return {
                 ...series,
+                ...(settings.aliases[series.id] ? { alias: settings.aliases[series.id] } : {}),
                 reviewStatus: this.ruleStore.getRecurringDecision(fileName, series.id) ?? 'pending',
                 ...(category ? {
                     category,
@@ -67,6 +69,55 @@ export class FinanceService {
                 } : {}),
             }
         })
+    }
+
+    getRecurringSettings(file: string) {
+        return this.ruleStore.getRecurringSettings(basename(file))
+    }
+
+    setRecurringAlias(file: string, targetId: string, alias: string | undefined, seriesIds: string[]) {
+        const fileName = basename(file)
+        const currentObservationIds = this.ruleStore.getRecurringSettings(fileName).observationIds[targetId]
+        const result = this.ruleStore.setRecurringAlias(fileName, targetId, alias)
+        const scan = this.scanRecurring(file, seriesIds, alias, currentObservationIds)
+        this.ruleStore.setRecurringObservationIds(fileName, targetId, scan.includedStatementIds)
+        return { ...result, scan }
+    }
+
+    createRecurringGroup(file: string, seriesIds: string[]) {
+        return this.ruleStore.createRecurringGroup(basename(file), seriesIds)
+    }
+
+    deleteRecurringGroup(file: string, groupId: string) {
+        return this.ruleStore.deleteRecurringGroup(basename(file), groupId)
+    }
+
+    scanRecurring(file: string, seriesIds: string[], alias?: string, currentObservationIds?: string[]) {
+        const statements = this.parseFile(file)
+        const fileName = basename(file)
+        const detected = detectRecurring(statements, { getStatementId: (index) => statementId(fileName, index) })
+        const memberSeries = detected.filter((series) => seriesIds.includes(series.id))
+        const beforeIds = currentObservationIds ?? [...new Set(memberSeries.flatMap((series) => series.occurrences.map((occurrence) => occurrence.statementId)))]
+        const memberDirections = new Set(memberSeries.map((series) => series.direction))
+        const memberCurrencies = new Set(memberSeries.map((series) => series.currency))
+        const cleanAlias = alias?.trim().toLocaleLowerCase()
+        const afterIds = cleanAlias
+            ? statements.map((statement, index) => ({ statement, id: statementId(fileName, index) })).filter(({ statement }) => {
+                const direction = statement.amount != null && statement.amount > 0 ? 'income' : 'expense'
+                const currency = statement.currency?.trim() || 'unknown'
+                const searchable = [statement.sender, statement.recipient, statement.purpose, statement.text, statement.transaction_type].filter(Boolean).join(' ').toLocaleLowerCase()
+                return statement.amount != null && statement.amount !== 0 && memberDirections.has(direction) && memberCurrencies.has(currency) && searchable.includes(cleanAlias)
+            }).map(({ id }) => id)
+            : beforeIds
+        const before = new Set(beforeIds)
+        const after = new Set(afterIds)
+        return {
+            beforeCount: before.size,
+            afterCount: after.size,
+            addedCount: [...after].filter((id) => !before.has(id)).length,
+            removedCount: [...before].filter((id) => !after.has(id)).length,
+            includedStatementIds: [...after],
+        }
     }
 
     setRecurringDecision(file: string, seriesId: string, decision: Parameters<RuleStoreService['setRecurringDecision']>[2]) {

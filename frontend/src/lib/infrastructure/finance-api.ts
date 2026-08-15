@@ -1,4 +1,4 @@
-import type { DashboardQuery, DashboardSnapshot, RecurringSeries, RecurringReviewStatus, RecurrenceDirection } from '../domain/finance'
+import type { DashboardQuery, DashboardSnapshot, RecurringSeries, RecurringReviewStatus, RecurrenceDirection, RecurringSettings, RecurringObservationScan } from '../domain/finance'
 import type { FinanceGateway } from '../application/load-dashboard'
 
 const DEFAULT_API_BASE_URL = 'http://localhost:3000'
@@ -33,6 +33,22 @@ export class FinanceApi implements FinanceGateway {
 
     async getRecurring(fileName: string): Promise<RecurringSeries[]> {
         return this.get<RecurringSeries[]>(`/finance/recurring/${encodeURIComponent(fileName)}`)
+    }
+
+    async getRecurringSettings(fileName: string): Promise<RecurringSettings> {
+        return this.get<RecurringSettings>(`/finance/recurring/${encodeURIComponent(fileName)}/settings`)
+    }
+
+    async saveRecurringAlias(fileName: string, targetId: string, seriesIds: string[], alias: string): Promise<{ targetId: string; alias: string | null; scan: RecurringObservationScan }> {
+        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/aliases/${encodeURIComponent(targetId)}`, 'PUT', { seriesIds, alias })
+    }
+
+    async createRecurringGroup(fileName: string, seriesIds: string[]) {
+        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/groups`, 'POST', { seriesIds })
+    }
+
+    async deleteRecurringGroup(fileName: string, groupId: string) {
+        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/groups/${encodeURIComponent(groupId)}`, 'DELETE')
     }
 
     async setRecurringDecision(fileName: string, seriesId: string, decision: Exclude<RecurringReviewStatus, 'pending'>) {

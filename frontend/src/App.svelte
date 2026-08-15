@@ -13,6 +13,8 @@
         FileSpreadsheet,
         Filter,
         FolderKanban,
+        Eye,
+        GitMerge,
         LayoutDashboard,
         ListFilter,
         Pencil,
@@ -29,7 +31,7 @@
         X,
     } from '@lucide/svelte'
     import { loadDashboard } from '$lib/application/load-dashboard'
-    import type { DashboardView, FinanceScope, RecurringSeries, ViewMode } from '$lib/domain/finance'
+    import type { DashboardView, FinanceScope, RecurringObservationScan, RecurringSeries, RecurringSettings, ViewMode } from '$lib/domain/finance'
     import { FinanceApi } from '$lib/infrastructure/finance-api'
     import Badge from '$lib/components/ui/Badge.svelte'
     import Button from '$lib/components/ui/Button.svelte'
@@ -86,6 +88,8 @@
         aliasUsage: Record<string, number>
     }
 
+    type RecurringRow = RecurringSeries & { memberSeriesIds: string[]; members: RecurringSeries[]; observationIds: string[] }
+
     const api = new FinanceApi()
     const DEFAULT_FILE = '15aug2024_15aug_2026.csv'
     const currency = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
@@ -104,6 +108,7 @@
     let fileName = DEFAULT_FILE
     let dashboard: DashboardView | null = null
     let recurring: RecurringSeries[] = []
+    let recurringSettings: RecurringSettings = { aliases: {}, groups: [], observationIds: {} }
     let rules: RulesView | null = null
     let selectedFile: File | null = null
     let loading = false
@@ -130,6 +135,12 @@
     let aliasUsageFilter: AliasUsageFilter = 'all'
     let aliasFieldFilter: Alias['field'] | 'all' = 'all'
     let aliasCategoryFilter = 'all'
+    let selectedRecurringIds: string[] = []
+    let recurringDialog: { kind: 'alias' | 'observations'; row: RecurringRow } | null = null
+    let recurringAliasDraft = ''
+    let recurringAliasScan: RecurringObservationScan | null = null
+    let recurringAliasScanning = false
+    let recurringObservationLimit = 100
 
     $: categories = rules?.categories ?? []
     $: aliases = rules?.aliases ?? []
@@ -178,6 +189,7 @@
     $: recurringExpenses = activeRecurring.filter((series) => series.direction === 'expense')
     $: recurringIncome = activeRecurring.filter((series) => series.direction === 'income')
     $: manualRecurringStatements = rules?.statements.filter((statement) => statement.recurringDirection) ?? []
+    $: recurringRows = buildRecurringRows()
     $: monthlyRecurringExpenses = recurringExpenses.reduce((total, series) => total + series.amountModel.typicalAmount / series.intervalMonths, 0)
     $: annualRecurringExpenses = recurringExpenses.reduce((total, series) => total + series.amountModel.typicalAmount * (12 / series.intervalMonths), 0)
     $: if (!overallMonthKey && monthlyPeriods.length) overallMonthKey = monthlyPeriods.at(-1)?.key ?? ''
@@ -257,6 +269,7 @@
             dashboard = nextDashboard
             rules = await api.getRules(fileName.trim())
             recurring = await api.getRecurring(fileName.trim())
+            recurringSettings = await api.getRecurringSettings(fileName.trim())
         } catch (cause) {
             error = cause instanceof Error ? cause.message : 'Could not load the finance workspace.'
         } finally {
@@ -313,6 +326,69 @@
         return confirmedRecurring
             .filter((series) => series.category === category)
             .reduce((total, series) => total + expectedRecurringForSeries(series), 0)
+    }
+
+    function buildRecurringRows(): RecurringRow[] {
+        const byId = new Map(recurring.map((series) => [series.id, series]))
+        const used = new Set<string>()
+        const merged = recurringSettings.groups.flatMap((group) => {
+            const members = group.seriesIds.map((id) => byId.get(id)).filter((series): series is RecurringSeries => Boolean(series))
+            if (!members.length) return []
+            members.forEach((series) => used.add(series.id))
+            return [mergeRecurringRow(group.id, members)]
+        })
+        return [...merged, ...recurring.filter((series) => !used.has(series.id)).map((series) => {
+            const observationIds = recurringSettings.observationIds[series.id] ?? series.occurrences.map((occurrence) => occurrence.statementId)
+            return ({
+            ...series,
+            label: recurringSettings.aliases[series.id] ?? series.alias ?? series.label,
+            memberSeriesIds: [series.id],
+            members: [series],
+            occurrences: observationsAsOccurrences([series], observationIds),
+            observationIds,
+        })})]
+    }
+
+    function mergeRecurringRow(id: string, members: RecurringSeries[]): RecurringRow {
+        const base = members[0]
+        const occurrences = [...new Map(members.flatMap((series) => series.occurrences).map((occurrence) => [occurrence.statementId, occurrence])).values()]
+            .sort((a, b) => a.date.localeCompare(b.date))
+        const observationIds = recurringSettings.observationIds[id] ?? occurrences.map((occurrence) => occurrence.statementId)
+        const typicalAmount = members.reduce((total, series) => total + series.amountModel.typicalAmount, 0)
+        const reviewStatus = members.every((series) => series.reviewStatus === 'confirmed') ? 'confirmed' : members.some((series) => series.reviewStatus === 'denied') ? 'denied' : 'pending'
+        return {
+            ...base,
+            id,
+            label: recurringSettings.aliases[id] ?? (members.length > 1 ? `${base.label} + ${members.length - 1} merged` : base.alias ?? base.label),
+            counterparty: members.length > 1 ? `${base.counterparty} + ${members.length - 1} more` : base.counterparty,
+            occurrences: observationsAsOccurrences(members, observationIds),
+            reviewStatus,
+            amountModel: { ...base.amountModel, typicalAmount, minimumAmount: members.reduce((total, series) => total + series.amountModel.minimumAmount, 0), maximumAmount: members.reduce((total, series) => total + series.amountModel.maximumAmount, 0) },
+            evidence: { ...base.evidence, occurrenceCount: observationIds.length },
+            memberSeriesIds: members.map((series) => series.id),
+            members,
+            observationIds,
+        }
+    }
+
+    function recurringObservationIds(row: RecurringRow) {
+        return row.observationIds
+    }
+
+    function observationsAsOccurrences(members: RecurringSeries[], ids: string[]) {
+        const existing = new Map(members.flatMap((series) => series.occurrences).map((occurrence) => [occurrence.statementId, occurrence]))
+        const statements = new Map((rules?.statements ?? []).map((statement) => [statement.id, statement]))
+        return ids.map((id) => existing.get(id) ?? {
+            statementIndex: -1,
+            statementId: id,
+            date: statements.get(id)?.date?.slice(0, 10) ?? '',
+            amount: Math.abs(statements.get(id)?.amount ?? 0),
+        })
+    }
+
+    function recurringObservationStatements(row: RecurringRow, ids = recurringObservationIds(row)) {
+        const statementMap = new Map((rules?.statements ?? []).map((statement) => [statement.id, statement]))
+        return ids.map((id) => statementMap.get(id)).filter((statement): statement is RuleStatement => Boolean(statement)).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
     }
 
     function expectedRecurringForSeries(series: RecurringSeries) {
@@ -637,16 +713,82 @@
         }
     }
 
-    async function setRecurringDecision(series: RecurringSeries, decision: 'confirmed' | 'denied') {
+    async function setRecurringRowDecision(row: RecurringRow, decision: 'confirmed' | 'denied') {
         saving = true
         try {
-            await api.setRecurringDecision(fileName, series.id, decision)
+            await Promise.all(row.memberSeriesIds.map((seriesId) => api.setRecurringDecision(fileName, seriesId, decision)))
             recurring = await api.getRecurring(fileName)
         } catch (cause) {
             error = cause instanceof Error ? cause.message : 'Could not update the recurring decision.'
         } finally {
             saving = false
         }
+    }
+
+    function toggleRecurringSelection(row: RecurringRow) {
+        if (row.members.length > 1) return
+        selectedRecurringIds = selectedRecurringIds.includes(row.id) ? selectedRecurringIds.filter((id) => id !== row.id) : [...selectedRecurringIds, row.id]
+    }
+
+    async function mergeSelectedRecurring() {
+        const seriesIds = recurringRows.filter((row) => selectedRecurringIds.includes(row.id)).flatMap((row) => row.memberSeriesIds)
+        if (seriesIds.length < 2) return
+        saving = true
+        try {
+            await api.createRecurringGroup(fileName, seriesIds)
+            selectedRecurringIds = []
+            await refresh()
+        } catch (cause) {
+            error = cause instanceof Error ? cause.message : 'Could not merge the recurring series.'
+        } finally {
+            saving = false
+        }
+    }
+
+    async function unmergeRecurring(row: RecurringRow) {
+        if (row.members.length < 2 || !confirm('Split this merged recurring payment back into its detected series?')) return
+        saving = true
+        try {
+            await api.deleteRecurringGroup(fileName, row.id)
+            await refresh()
+        } catch (cause) {
+            error = cause instanceof Error ? cause.message : 'Could not split the recurring payment.'
+        } finally {
+            saving = false
+        }
+    }
+
+    function openRecurringAlias(row: RecurringRow) {
+        recurringDialog = { kind: 'alias', row }
+        recurringAliasDraft = recurringSettings.aliases[row.id] ?? row.alias ?? ''
+        recurringAliasScan = null
+    }
+
+    async function saveRecurringAlias() {
+        if (!recurringDialog) return
+        recurringAliasScanning = true
+        try {
+            const { row } = recurringDialog
+            const result = await api.saveRecurringAlias(fileName, row.id, row.memberSeriesIds, recurringAliasDraft.trim())
+            recurringAliasScan = result.scan
+            recurringSettings = await api.getRecurringSettings(fileName)
+            recurring = await api.getRecurring(fileName)
+        } catch (cause) {
+            error = cause instanceof Error ? cause.message : 'Could not save the recurring alias.'
+        } finally {
+            recurringAliasScanning = false
+        }
+    }
+
+    function openRecurringObservations(row: RecurringRow) {
+        recurringDialog = { kind: 'observations', row }
+        recurringAliasScan = null
+        recurringObservationLimit = 100
+    }
+
+    function closeRecurringDialog() {
+        recurringDialog = null
+        recurringAliasScan = null
     }
 
     async function toggleManualRecurring(statement: RuleStatement) {
@@ -862,8 +1004,8 @@
                 </div>
                 {#if manualRecurringStatements.length}<Card className="overflow-hidden border-indigo-100 bg-indigo-50/40 p-0"><div class="border-b border-indigo-100 p-5"><p class="label text-indigo-500">Manual assignments</p><h3 class="mt-1 text-xl font-semibold text-slate-950">Statements you marked as recurring</h3></div><div class="divide-y divide-indigo-100">{#each manualRecurringStatements as item}<div class="flex items-center gap-3 px-5 py-3.5"><div class="min-w-0 flex-1"><p class="truncate font-semibold text-slate-800">{item.recipient || item.sender || item.text || 'Untitled statement'}</p><p class="mt-1 text-xs text-slate-500">{item.date ? dateLabel(item.date.slice(0, 10)) : 'No date'} · {money(item.amount)}</p></div><Badge tone={item.recurringDirection === 'income' ? 'success' : 'warning'}>Recurring {item.recurringDirection === 'income' ? 'income' : 'payment'}</Badge><button class="icon-button danger-hover" title="Remove recurring assignment" aria-label="Remove recurring assignment" onclick={() => toggleManualRecurring(item)} disabled={saving}><X size={15} /></button></div>{/each}</div></Card>{/if}
                 <Card className="overflow-hidden p-0">
-                    <div class="border-b border-slate-100 p-5"><p class="label">Recurring inventory</p><h3 class="mt-1 text-xl font-semibold text-slate-950">Your repeating commitments and income</h3><p class="hint">Confirm or dismiss each detected series. You can also tag individual statements from Statements.</p></div>
-                    <div class="overflow-x-auto"><table class="w-full min-w-[860px] text-left text-sm"><thead class="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-400"><tr><th class="px-5 py-3 font-bold">Payment</th><th class="px-5 py-3 font-bold">Cadence</th><th class="px-5 py-3 font-bold">Typical</th><th class="px-5 py-3 font-bold">Annualized</th><th class="px-5 py-3 font-bold">Next date</th><th class="px-5 py-3 font-bold">Review</th><th class="px-5 py-3 text-right font-bold">Actions</th></tr></thead><tbody class="divide-y divide-slate-100">{#each recurring as item}<tr class:item-denied={item.reviewStatus === 'denied'} class="hover:bg-slate-50/70"><td class="px-5 py-4"><p class="font-semibold text-slate-800">{item.label}</p><p class="mt-1 text-xs text-slate-500">{item.counterparty} · {item.direction === 'expense' ? 'Expense' : 'Income'}</p></td><td class="px-5 py-4 text-slate-600">{cadenceLabel(item)}</td><td class={item.direction === 'expense' ? 'px-5 py-4 font-semibold text-slate-900' : 'px-5 py-4 font-semibold text-emerald-700'}>{recurringAmount(item)}<span class="ml-1 text-xs font-normal text-slate-400">{item.currency}</span></td><td class="px-5 py-4 text-slate-700">{money(item.amountModel.typicalAmount * (12 / item.intervalMonths))}</td><td class="px-5 py-4"><p class="font-medium text-slate-700">{dateLabel(item.nextExpectedDate)}</p><p class="mt-1 text-xs text-slate-400">± {item.anchor.toleranceDays} days</p></td><td class="px-5 py-4"><Badge tone={item.reviewStatus === 'confirmed' ? 'success' : item.reviewStatus === 'denied' ? 'danger' : 'warning'}>{item.reviewStatus}</Badge><p class="mt-1 text-xs text-slate-400">{item.confidence} · {item.evidence.occurrenceCount} observations</p></td><td class="px-5 py-4"><div class="flex justify-end gap-1">{#if item.reviewStatus !== 'confirmed'}<button class="icon-button recurring-confirm" title="Confirm recurring series" aria-label={`Confirm ${item.label} as recurring`} onclick={() => setRecurringDecision(item, 'confirmed')} disabled={saving}><Check size={15} /></button>{/if}{#if item.reviewStatus !== 'denied'}<button class="icon-button danger-hover" title="Deny recurring series" aria-label={`Deny ${item.label} as recurring`} onclick={() => setRecurringDecision(item, 'denied')} disabled={saving}><X size={15} /></button>{/if}</div></td></tr>{:else}<tr><td colspan="7" class="px-5 py-10 text-center text-sm text-slate-500">No recurring series found. More history makes yearly detections stronger.</td></tr>{/each}</tbody></table></div>
+                    <div class="border-b border-slate-100 p-5"><div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p class="label">Recurring inventory</p><h3 class="mt-1 text-xl font-semibold text-slate-950">Your repeating commitments and income</h3><p class="hint">Select detected series to merge them, edit an alias to rescan observations, or open every statement found.</p></div>{#if selectedRecurringIds.length}<Button size="sm" onclick={mergeSelectedRecurring} disabled={saving || selectedRecurringIds.length < 2}><GitMerge size={14} />Merge {selectedRecurringIds.length} selected</Button>{/if}</div></div>
+                    <div class="overflow-x-auto"><table class="w-full min-w-[1040px] text-left text-sm"><thead class="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-400"><tr><th class="w-12 px-5 py-3 font-bold"><span class="sr-only">Select</span></th><th class="px-5 py-3 font-bold">Payment</th><th class="px-5 py-3 font-bold">Cadence</th><th class="px-5 py-3 font-bold">Typical</th><th class="px-5 py-3 font-bold">Observations</th><th class="px-5 py-3 font-bold">Review</th><th class="px-5 py-3 text-right font-bold">Actions</th></tr></thead><tbody class="divide-y divide-slate-100">{#each recurringRows as item}<tr class:item-denied={item.reviewStatus === 'denied'} class="hover:bg-slate-50/70"><td class="px-5 py-4 align-top"><input type="checkbox" checked={selectedRecurringIds.includes(item.id)} disabled={item.members.length > 1} onchange={() => toggleRecurringSelection(item)} aria-label={`Select ${item.label} for merging`} /></td><td class="px-5 py-4"><p class="font-semibold text-slate-800">{item.label}</p><p class="mt-1 text-xs text-slate-500">{item.counterparty} · {item.direction === 'expense' ? 'Expense' : 'Income'}{#if item.members.length > 1} · {item.members.length} detected series{/if}</p></td><td class="px-5 py-4 text-slate-600">{cadenceLabel(item)}</td><td class={item.direction === 'expense' ? 'px-5 py-4 font-semibold text-slate-900' : 'px-5 py-4 font-semibold text-emerald-700'}>{recurringAmount(item)}<span class="ml-1 text-xs font-normal text-slate-400">{item.currency}</span></td><td class="px-5 py-4"><button class="observation-count" onclick={() => openRecurringObservations(item)}><span>{item.occurrences.length}</span><span>{item.occurrences.length === 1 ? 'statement' : 'statements'}</span><Eye size={14} /></button></td><td class="px-5 py-4"><Badge tone={item.reviewStatus === 'confirmed' ? 'success' : item.reviewStatus === 'denied' ? 'danger' : 'warning'}>{item.reviewStatus}</Badge><p class="mt-1 text-xs text-slate-400">{item.confidence}</p></td><td class="px-5 py-4"><div class="flex justify-end gap-1"><button class="icon-button" title="View all observations" aria-label={`View all observations for ${item.label}`} onclick={() => openRecurringObservations(item)}><Eye size={15} /></button><button class="icon-button" title="Adjust recurring alias" aria-label={`Adjust alias for ${item.label}`} onclick={() => openRecurringAlias(item)}><Pencil size={15} /></button>{#if item.members.length > 1}<button class="icon-button danger-hover" title="Split merged recurring payment" aria-label={`Split ${item.label}`} onclick={() => unmergeRecurring(item)} disabled={saving}><GitMerge size={15} /></button>{/if}{#if item.reviewStatus !== 'confirmed'}<button class="icon-button recurring-confirm" title="Confirm recurring series" aria-label={`Confirm ${item.label} as recurring`} onclick={() => setRecurringRowDecision(item, 'confirmed')} disabled={saving}><Check size={15} /></button>{/if}{#if item.reviewStatus !== 'denied'}<button class="icon-button danger-hover" title="Deny recurring series" aria-label={`Deny ${item.label} as recurring`} onclick={() => setRecurringRowDecision(item, 'denied')} disabled={saving}><X size={15} /></button>{/if}</div></td></tr>{:else}<tr><td colspan="7" class="px-5 py-10 text-center text-sm text-slate-500">No recurring series found. More history makes yearly detections stronger.</td></tr>{/each}</tbody></table></div>
                 </Card>
             </section>
         {:else if page === 'aliases'}
@@ -924,4 +1066,18 @@
             </section>
         {/if}
     </div>
+    {#if recurringDialog}
+        <div class="modal-backdrop" role="presentation" onclick={closeRecurringDialog}>
+            <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="recurring-dialog-title" tabindex="-1" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>
+                <div class="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4"><div class="min-w-0"><p class="label text-indigo-500">Recurring payment</p><h2 id="recurring-dialog-title" class="mt-1 truncate text-xl font-semibold text-slate-950">{recurringDialog.row.label}</h2><p class="mt-1 text-xs text-slate-500">{recurringDialog.row.counterparty} · {recurringDialog.row.members.length} detected series · {recurringObservationIds(recurringDialog.row).length} detected observations</p></div><button class="icon-button" title="Close" aria-label="Close" onclick={closeRecurringDialog}><X size={17} /></button></div>
+                {#if recurringDialog.kind === 'alias'}
+                    <div class="space-y-5 p-5"><div><label class="label" for="recurring-alias">Recurring alias</label><input id="recurring-alias" bind:value={recurringAliasDraft} class="field mt-2 w-full" placeholder="e.g. Netflix, Spotify family plan" /><p class="hint">This phrase is scanned across the matching payment/income direction and currency to find the statements that belong to it.</p></div><div class="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4"><div class="flex items-center justify-between gap-3"><div><p class="label text-indigo-500">Observation impact</p><p class="mt-1 text-sm text-slate-700">Save the alias to rescan the ledger automatically.</p></div>{#if recurringAliasScanning}<RefreshCw size={17} class="animate-spin text-primary" />{/if}</div>{#if recurringAliasScan}<div class="mt-4 grid grid-cols-3 gap-2 text-center"><div class="rounded-xl bg-white/80 p-3"><p class="label">Before</p><p class="mt-1 text-lg font-semibold text-slate-950">{recurringAliasScan.beforeCount}</p></div><div class="rounded-xl bg-white/80 p-3"><p class="label">After</p><p class="mt-1 text-lg font-semibold text-slate-950">{recurringAliasScan.afterCount}</p></div><div class="rounded-xl bg-white/80 p-3"><p class="label">Change</p><p class={`mt-1 text-lg font-semibold ${recurringAliasScan.addedCount > recurringAliasScan.removedCount ? 'text-emerald-700' : recurringAliasScan.addedCount < recurringAliasScan.removedCount ? 'text-amber-700' : 'text-slate-700'}`}>{recurringAliasScan.afterCount - recurringAliasScan.beforeCount > 0 ? '+' : ''}{recurringAliasScan.afterCount - recurringAliasScan.beforeCount}</p></div></div><p class="mt-3 text-xs text-slate-500">{recurringAliasScan.addedCount} statement{recurringAliasScan.addedCount === 1 ? '' : 's'} added · {recurringAliasScan.removedCount} removed. The saved alias now includes {recurringAliasScan.afterCount} observations.</p>{:else}<p class="mt-4 text-sm text-slate-500">No scan has run for this alias yet.</p>{/if}</div><div class="flex justify-end gap-2"><Button variant="outline" onclick={closeRecurringDialog}>Done</Button><Button onclick={saveRecurringAlias} disabled={recurringAliasScanning}><Check size={14} />Save and scan</Button></div></div>
+                {:else}
+                    {@const dialogObservationIds = recurringAliasScan?.includedStatementIds ?? recurringObservationIds(recurringDialog.row)}
+                    {@const dialogObservations = recurringObservationStatements(recurringDialog.row, dialogObservationIds)}
+                    <div class="max-h-[70vh] overflow-y-auto"><div class="border-b border-slate-100 bg-slate-50/70 px-5 py-3 text-xs font-semibold text-slate-500">Showing {Math.min(recurringObservationLimit, dialogObservations.length)} of {dialogObservations.length} statements</div><div class="divide-y divide-slate-100">{#each dialogObservations.slice(0, recurringObservationLimit) as item}<div class="px-5 py-3.5"><div class="flex items-center justify-between gap-3"><p class="min-w-0 truncate font-semibold text-slate-800">{item.recipient || item.sender || item.text || 'Untitled statement'}</p><p class={item.amount != null && item.amount > 0 ? 'shrink-0 font-semibold text-emerald-700' : 'shrink-0 font-semibold text-slate-950'}>{money(item.amount)}</p></div><p class="mt-1 text-xs text-slate-500">{item.date ? dateLabel(item.date.slice(0, 10)) : 'No date'} · {item.text || item.purpose || item.transactionType || 'No description'}</p><p class="mt-1 break-all text-[11px] text-slate-400">{item.id}</p></div>{:else}<p class="p-8 text-center text-sm text-slate-500">No statements found.</p>{/each}</div>{#if recurringObservationLimit < dialogObservations.length}<div class="border-t border-slate-100 p-4 text-center"><Button variant="outline" onclick={() => recurringObservationLimit += 100}>Load 100 more</Button></div>{/if}</div>
+                {/if}
+            </div>
+        </div>
+    {/if}
 </main>

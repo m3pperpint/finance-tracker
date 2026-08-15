@@ -94,6 +94,30 @@ export class FinanceController {
         return this.financeService.getRecurring(this.getFilePath(fileName))
     }
 
+    @Get('recurring/:fileName/settings')
+    getRecurringSettings(@Param('fileName') fileName: string) {
+        return this.financeService.getRecurringSettings(this.getFilePath(fileName))
+    }
+
+    @Put('recurring/:fileName/aliases/:targetId')
+    setRecurringAlias(@Param('fileName') fileName: string, @Param('targetId') targetId: string, @Body() body: Record<string, unknown>) {
+        const alias = typeof body.alias === 'string' ? body.alias.trim() || undefined : undefined
+        const seriesIds = Array.isArray(body.seriesIds) ? body.seriesIds.filter((value): value is string => typeof value === 'string') : []
+        if (!seriesIds.length) throw new BadRequestException('seriesIds must contain at least one recurring series id')
+        return this.financeService.setRecurringAlias(this.getFilePath(fileName), targetId, alias, seriesIds)
+    }
+
+    @Post('recurring/:fileName/groups')
+    createRecurringGroup(@Param('fileName') fileName: string, @Body() body: Record<string, unknown>) {
+        const seriesIds = Array.isArray(body.seriesIds) ? body.seriesIds.filter((value): value is string => typeof value === 'string') : []
+        return this.financeService.createRecurringGroup(this.getFilePath(fileName), seriesIds)
+    }
+
+    @Delete('recurring/:fileName/groups/:groupId')
+    deleteRecurringGroup(@Param('fileName') fileName: string, @Param('groupId') groupId: string) {
+        return this.financeService.deleteRecurringGroup(this.getFilePath(fileName), groupId)
+    }
+
     @Put('recurring/:fileName/decisions/:seriesId')
     setRecurringDecision(@Param('fileName') fileName: string, @Param('seriesId') seriesId: string, @Body() body: Record<string, unknown>) {
         if (body.decision !== 'confirmed' && body.decision !== 'denied') throw new BadRequestException('decision must be confirmed or denied')

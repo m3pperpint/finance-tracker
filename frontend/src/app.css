@@ -156,6 +156,11 @@
 .recurring-button-active { @apply border-indigo-200 bg-indigo-50 text-indigo-700; }
 .recurring-confirm:hover { @apply bg-emerald-50 text-emerald-700; }
 .item-denied { @apply opacity-55; }
+.observation-count { @apply inline-flex items-center gap-1.5 rounded-xl bg-indigo-50 px-2.5 py-2 text-left text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100; }
+.observation-count span:first-child { @apply text-sm; }
+.observation-count span:nth-child(2) { @apply text-indigo-500; }
+.modal-backdrop { @apply fixed inset-0 z-50 flex items-end justify-center bg-slate-950/35 p-0 backdrop-blur-sm sm:items-center sm:p-6; }
+.modal-panel { @apply max-h-[90vh] w-full overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-w-2xl sm:rounded-3xl; }
 
 /* Search controls keep their icon in a dedicated visual gutter. */
 .field.pl-9 { padding-left: 2.5rem; }

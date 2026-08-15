@@ -7,12 +7,20 @@ import type { RecurrenceDirection } from '../core/finance/recurrence-model.js'
 
 export type RecurringDecision = 'confirmed' | 'denied'
 
+export interface RecurringMergeGroup {
+    id: string
+    seriesIds: string[]
+}
+
 interface RuleFile {
-    version: 4
+    version: 5
     categories: ManagedCategory[]
     aliasesByFile: Record<string, AliasRule[]>
     recurringDecisionsByFile: Record<string, Record<string, RecurringDecision>>
     manualRecurringByFile: Record<string, Record<string, RecurrenceDirection>>
+    recurringAliasesByFile: Record<string, Record<string, string>>
+    recurringGroupsByFile: Record<string, RecurringMergeGroup[]>
+    recurringObservationIdsByFile: Record<string, Record<string, string[]>>
 }
 
 @Injectable()
@@ -26,25 +34,31 @@ export class RuleStoreService {
             const aliases = Object.values(parsed.aliasesByFile ?? {}).flat()
             const referenced = new Set(aliases.map((alias) => alias.categoryId))
             return {
-                version: 4,
+                version: 5,
                 categories: (parsed.categories ?? []).filter((category) => referenced.has(category.id)),
                 aliasesByFile: parsed.aliasesByFile ?? {},
                 recurringDecisionsByFile: {},
                 manualRecurringByFile: {},
+                recurringAliasesByFile: {},
+                recurringGroupsByFile: {},
+                recurringObservationIdsByFile: {},
             }
         }
-        if (parsed.version !== 3 && parsed.version !== 4) return this.empty()
+        if (parsed.version !== 3 && parsed.version !== 4 && parsed.version !== 5) return this.empty()
         return {
-            version: 4,
+            version: 5,
             categories: parsed.categories ?? [],
             aliasesByFile: parsed.aliasesByFile ?? {},
             recurringDecisionsByFile: parsed.recurringDecisionsByFile ?? {},
             manualRecurringByFile: parsed.manualRecurringByFile ?? {},
+            recurringAliasesByFile: parsed.recurringAliasesByFile ?? {},
+            recurringGroupsByFile: parsed.recurringGroupsByFile ?? {},
+            recurringObservationIdsByFile: parsed.recurringObservationIdsByFile ?? {},
         }
     }
 
     private empty(): RuleFile {
-        return { version: 4, categories: [], aliasesByFile: {}, recurringDecisionsByFile: {}, manualRecurringByFile: {} }
+        return { version: 5, categories: [], aliasesByFile: {}, recurringDecisionsByFile: {}, manualRecurringByFile: {}, recurringAliasesByFile: {}, recurringGroupsByFile: {}, recurringObservationIdsByFile: {} }
     }
 
     private write(data: RuleFile) {
@@ -123,6 +137,56 @@ export class RuleStoreService {
         else delete data.manualRecurringByFile['*'][statement]
         this.write(data)
         return { statementId: statement, direction: direction ?? null }
+    }
+
+    getRecurringSettings(fileName: string) {
+        const data = this.ensure(fileName, [])
+        return {
+            aliases: data.recurringAliasesByFile['*'] ?? {},
+            groups: data.recurringGroupsByFile['*'] ?? [],
+            observationIds: data.recurringObservationIdsByFile['*'] ?? {},
+        }
+    }
+
+    setRecurringAlias(fileName: string, targetId: string, alias: string | undefined) {
+        const data = this.ensure(fileName, [])
+        data.recurringAliasesByFile['*'] ??= {}
+        if (alias) data.recurringAliasesByFile['*'][targetId] = alias
+        else delete data.recurringAliasesByFile['*'][targetId]
+        this.write(data)
+        return { targetId, alias: alias ?? null }
+    }
+
+    setRecurringObservationIds(fileName: string, targetId: string, observationIds: string[]) {
+        const data = this.ensure(fileName, [])
+        data.recurringObservationIdsByFile['*'] ??= {}
+        data.recurringObservationIdsByFile['*'][targetId] = observationIds
+        this.write(data)
+    }
+
+    createRecurringGroup(fileName: string, seriesIds: string[]) {
+        const data = this.ensure(fileName, [])
+        const existing = data.recurringGroupsByFile['*'] ?? []
+        const ids = [...new Set(seriesIds)]
+        if (ids.length < 2) throw new ConflictException('Select at least two recurring series to merge')
+        if (ids.some((id) => existing.some((group) => group.seriesIds.includes(id)))) throw new ConflictException('A recurring series is already part of a merged payment')
+        const group = { id: `recurring-group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, seriesIds: ids }
+        existing.push(group)
+        data.recurringGroupsByFile['*'] = existing
+        this.write(data)
+        return group
+    }
+
+    deleteRecurringGroup(fileName: string, groupId: string) {
+        const data = this.ensure(fileName, [])
+        const groups = data.recurringGroupsByFile['*'] ?? []
+        const index = groups.findIndex((group) => group.id === groupId)
+        if (index === -1) throw new NotFoundException('Recurring group not found')
+        const [removed] = groups.splice(index, 1)
+        delete data.recurringAliasesByFile['*']?.[groupId]
+        delete data.recurringObservationIdsByFile['*']?.[groupId]
+        this.write(data)
+        return removed
     }
 
     getCategoryDefinitions(fileName: string, statements: BankStatement[]): SpendingCategoryDefinition[] {
