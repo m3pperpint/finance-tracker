@@ -2267,75 +2267,60 @@
             class="mb-6 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between"
         >
             <div>
-                <div class="mb-3 flex items-center gap-2">
-                    <span class="h-2 w-2 rounded-full bg-emerald-500"
-                    ></span><span
-                        class="text-xs font-bold uppercase tracking-[0.22em] text-emerald-700"
-                        >Finance workspace</span
+                <div class="flex flex-wrap items-center gap-2">
+                    <label
+                        class="flex h-10 max-w-64 items-center gap-2 rounded-xl border border-white/80 bg-white/80 px-3 text-sm shadow-sm backdrop-blur"
+                    >
+                        <FolderKanban size={16} class="text-slate-400" />
+                        <select
+                            bind:value={selectedLedgerId}
+                            onchange={selectLedger}
+                            class="min-w-0 bg-transparent outline-none"
+                            aria-label="Selected ledger"
+                        >
+                            <option value="">Select account ledger</option>
+                            {#each ledgers as ledger}<option value={ledger.id}
+                                    >{ledger.name} · {ledger.sources.length} files</option
+                                >{/each}
+                        </select>
+                    </label>
+                    {#if selectedLedgerId}<Button
+                            size="sm"
+                            variant="outline"
+                            onclick={() => (creatingLedger = !creatingLedger)}
+                            ><Plus size={15} />New ledger</Button
+                        >{/if}
+                    <label
+                        class="flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-dashed border-slate-300 px-3 text-xs font-semibold text-slate-600 hover:border-primary hover:bg-white"
+                        ><Upload size={15} />{selectedFile?.name ??
+                            'Upload CSV'}<input
+                            id="statement-file-input"
+                            type="file"
+                            accept=".csv,text/csv"
+                            class="sr-only"
+                            disabled={!selectedLedgerId}
+                            onchange={chooseFile}
+                        /></label
+                    >
+                    {#if selectedFile}<Button
+                            size="sm"
+                            onclick={upload}
+                            disabled={saving}
+                            ><Upload size={14} />Save file</Button
+                        >{/if}
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        title="Refresh"
+                        aria-label="Refresh"
+                        onclick={refresh}
+                        disabled={!selectedLedgerId.trim() || loading}
+                        ><RefreshCw
+                            size={16}
+                            class={loading ? 'animate-spin' : ''}
+                        /></Button
                     >
                 </div>
-                <h1
-                    class="text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl"
-                >
-                    Understand your money, then decide.
-                </h1>
-                <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                    See what changed, what repeats, and where your spending has
-                    room to move.
-                </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-                <label
-                    class="flex h-10 max-w-64 items-center gap-2 rounded-xl border border-white/80 bg-white/80 px-3 text-sm shadow-sm backdrop-blur"
-                >
-                    <FolderKanban size={16} class="text-slate-400" />
-                    <select
-                        bind:value={selectedLedgerId}
-                        onchange={selectLedger}
-                        class="min-w-0 bg-transparent outline-none"
-                        aria-label="Selected ledger"
-                    >
-                        <option value="">Select account ledger</option>
-                        {#each ledgers as ledger}<option value={ledger.id}
-                                >{ledger.name} · {ledger.sources.length} files</option
-                            >{/each}
-                    </select>
-                </label>
-                {#if selectedLedgerId}<Button
-                        size="sm"
-                        variant="outline"
-                        onclick={() => (creatingLedger = !creatingLedger)}
-                        ><Plus size={15} />New ledger</Button
-                    >{/if}
-                <label
-                    class="flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-dashed border-slate-300 px-3 text-xs font-semibold text-slate-600 hover:border-primary hover:bg-white"
-                    ><Upload size={15} />{selectedFile?.name ??
-                        'Upload CSV'}<input
-                        id="statement-file-input"
-                        type="file"
-                        accept=".csv,text/csv"
-                        class="sr-only"
-                        disabled={!selectedLedgerId}
-                        onchange={chooseFile}
-                    /></label
-                >
-                {#if selectedFile}<Button
-                        size="sm"
-                        onclick={upload}
-                        disabled={saving}><Upload size={14} />Save file</Button
-                    >{/if}
-                <Button
-                    variant="outline"
-                    size="icon"
-                    title="Refresh"
-                    aria-label="Refresh"
-                    onclick={refresh}
-                    disabled={!selectedLedgerId.trim() || loading}
-                    ><RefreshCw
-                        size={16}
-                        class={loading ? 'animate-spin' : ''}
-                    /></Button
-                >
             </div>
         </header>
 
@@ -2547,11 +2532,7 @@
                 <Card
                     className="flex flex-col gap-4 border-indigo-100 bg-indigo-50/60 p-4 sm:flex-row sm:items-center sm:justify-between"
                     ><div>
-                        <p class="label text-indigo-500">Analyze your money</p>
-                        <p class="mt-1 text-sm text-slate-700">
-                            Choose the period that should drive every number
-                            below.
-                        </p>
+                        <p class="label text-indigo-500">Analyze timeframe</p>
                     </div>
                     <div class="flex flex-wrap items-center gap-2">
                         <div class="inline-flex rounded-xl bg-white/70 p-1">
@@ -2874,20 +2855,10 @@
                     >
                 </div>
 
+                <hr />
                 <div
                     class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"
                 >
-                    <div>
-                        <Badge>Overall history</Badge>
-                        <h2 class="mt-2 page-title">
-                            See the pattern, then inspect a month.
-                        </h2>
-                        <p class="page-subtitle">
-                            The chart splits total spending across every
-                            category. Choose a category to compare it inside the
-                            selected month below.
-                        </p>
-                    </div>
                     <div class="flex items-center gap-2">
                         <span class="text-xs font-semibold text-slate-500"
                             >Compare category</span
@@ -3257,31 +3228,10 @@
             </section>
         {:else if page === 'spending'}
             <section class="space-y-5 animate-float-in">
-                <div
-                    class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"
-                >
-                    <div>
-                        <Badge tone="success">Spending analysis</Badge>
-                        <h2 class="mt-2 page-title">Where did the money go?</h2>
-                        <p class="page-subtitle">
-                            Compare this period with what is usual, then open a
-                            category to see the merchants behind the change.
-                        </p>
-                    </div>
-                    <span class="text-xs font-semibold text-slate-400"
-                        >{activeLedger?.name ?? selectedLedgerId}</span
-                    >
-                </div>
                 <Card
                     className="flex flex-col gap-4 border-indigo-100 bg-indigo-50/60 p-4 sm:flex-row sm:items-center sm:justify-between"
                     ><div>
-                        <p class="label text-indigo-500">
-                            Analyze this timeframe
-                        </p>
-                        <p class="mt-1 text-sm text-slate-700">
-                            Every number on this page follows the selected
-                            period.
-                        </p>
+                        <p class="label text-indigo-500">Analyze timeframe</p>
                     </div>
                     <div class="flex flex-wrap items-center gap-2">
                         <div class="inline-flex rounded-xl bg-white/70 p-1">
@@ -3588,11 +3538,6 @@
                             >
                                 What is still likely in {scopeLabel.toLocaleLowerCase()}?
                             </h3>
-                            <p class="hint">
-                                Fixed movements use confirmed recurring series.
-                                Flexible spending is an estimate from the last
-                                three months.
-                            </p>
                         </div>
                         <Badge
                             >{mode === 'all'
@@ -3693,13 +3638,6 @@
                                     Variable spending based on your average
                                     monthly habits over the last 3 months.
                                 </p>
-                                <div
-                                    class="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800"
-                                >
-                                    This is a guide, not a promise. Groceries,
-                                    dining, shopping, and other changing
-                                    categories can move above or below it.
-                                </div>
                             </div>
                         </div>{/if}</Card
                 >
@@ -3886,25 +3824,6 @@
             </section>
         {:else if page === 'recurring'}
             <section class="space-y-5 animate-float-in">
-                <div
-                    class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"
-                >
-                    <div>
-                        <Badge tone="success"
-                            >Planning view · {activeRecurring.length} active</Badge
-                        >
-                        <h2 class="mt-2 page-title">
-                            Recurring money, made visible.
-                        </h2>
-                        <p class="page-subtitle">
-                            Review detected payments and income, then confirm
-                            what belongs in your recurring plan.
-                        </p>
-                    </div>
-                    <span class="text-xs font-semibold text-slate-400"
-                        >Derived from statement history</span
-                    >
-                </div>
                 <div class="grid gap-4 md:grid-cols-3">
                     <Card className="p-5"
                         ><p class="label">Recurring expenses / month</p>
@@ -4763,25 +4682,6 @@
             </section>
         {:else if page === 'statements'}
             <section class="space-y-5 animate-float-in">
-                <div
-                    class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"
-                >
-                    <div>
-                        <Badge tone="success"
-                            >Ledger · {rules?.stats.total ?? 0}</Badge
-                        >
-                        <h2 class="mt-2 page-title">
-                            Find any statement, fast.
-                        </h2>
-                        <p class="page-subtitle">
-                            Search every imported field, inspect the raw
-                            details, and fix gaps without leaving the ledger.
-                        </p>
-                    </div>
-                    <div class="text-xs font-semibold text-slate-400">
-                        Latest first
-                    </div>
-                </div>
                 <Card className="p-4"
                     ><div class="flex flex-col gap-3 lg:flex-row">
                         <div class="relative min-w-0 flex-1">
@@ -5099,16 +4999,6 @@
                         >
                     </Card>
                 {/if}
-                <div>
-                    <Badge tone="success">Taxonomy · {categories.length}</Badge>
-                    <h2 class="mt-2 page-title">
-                        Categories with a point of view.
-                    </h2>
-                    <p class="page-subtitle">
-                        Keep necessities and conveniences separate. Drag a card
-                        between columns whenever your perspective changes.
-                    </p>
-                </div>
                 <Card className="border-indigo-100 bg-indigo-50/60 p-5"
                     ><div class="mb-4 flex items-center gap-2">
                         <Plus size={17} class="text-primary" />
@@ -5251,21 +5141,6 @@
             </section>
         {:else}
             <section class="space-y-5 animate-float-in">
-                <div>
-                    <Badge
-                        tone={unmatched.length || conflicts.length
-                            ? 'danger'
-                            : 'success'}
-                        >{unmatched.length || conflicts.length
-                            ? `${unmatched.length + conflicts.length} need attention`
-                            : 'All clear'}</Badge
-                    >
-                    <h2 class="mt-2 page-title">Review the edges.</h2>
-                    <p class="page-subtitle">
-                        Unmatched statements need a new alias. Conflicts need a
-                        sharper rule so every statement lands exactly once.
-                    </p>
-                </div>
                 <div class="grid gap-4 md:grid-cols-3">
                     <Card className="p-4"
                         ><p class="label">Unmatched</p>
