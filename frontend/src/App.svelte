@@ -800,6 +800,7 @@
             : members.some((series) => series.reviewStatus === 'denied')
               ? 'denied'
               : 'pending'
+        const latest = latestMember(members)
         return {
             ...base,
             id,
@@ -815,6 +816,10 @@
             category: members.every((series) => series.category === base.category)
                 ? base.category
                 : undefined,
+            anchor: latest.anchor,
+            nextExpectedDate: latest.nextExpectedDate,
+            expectedDateFrom: latest.expectedDateFrom,
+            expectedDateTo: latest.expectedDateTo,
             necessity: members.every((series) => series.category === base.category)
                 ? base.necessity
                 : undefined,
@@ -941,7 +946,39 @@
             2,
             Math.ceil(Math.min(leftDates.length, rightDates.length) * 0.5)
         )
-        return matches >= requiredMatches
+        return matches >= requiredMatches || adjacentRecurringSchedule(left, right)
+    }
+
+    function adjacentRecurringSchedule(left: RecurringSeries, right: RecurringSeries) {
+        const leftFirst = left.occurrences[0]
+        const leftLast = left.occurrences.at(-1)
+        const rightFirst = right.occurrences[0]
+        const rightLast = right.occurrences.at(-1)
+        if (!leftFirst || !leftLast || !rightFirst || !rightLast) return false
+
+        const [older, newer] = leftLast.date < rightFirst.date
+            ? [left, right]
+            : rightLast.date < leftFirst.date
+              ? [right, left]
+              : [undefined, undefined]
+        if (!older || !newer) return false
+
+        const olderLastDate = new Date(`${older.occurrences.at(-1)!.date}T00:00:00`)
+        const newerFirstDate = new Date(`${newer.occurrences[0].date}T00:00:00`)
+        const monthsApart = (newerFirstDate.getFullYear() - olderLastDate.getFullYear()) * 12 +
+            newerFirstDate.getMonth() - olderLastDate.getMonth()
+        const amountScale = Math.max(older.amountModel.typicalAmount, newer.amountModel.typicalAmount)
+        const amountDifference = Math.abs(older.amountModel.typicalAmount - newer.amountModel.typicalAmount)
+        return monthsApart === older.intervalMonths &&
+            amountDifference <= Math.max(1, amountScale * 0.05)
+    }
+
+    function latestMember(members: RecurringSeries[]) {
+        return members.reduce((latest, member) =>
+            (member.occurrences.at(-1)?.date ?? '') > (latest.occurrences.at(-1)?.date ?? '')
+                ? member
+                : latest
+        )
     }
 
     function median(values: number[]) {

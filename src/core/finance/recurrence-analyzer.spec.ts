@@ -48,6 +48,17 @@ describe('detectRecurring', () => {
         expect(result[0].nextExpectedDate).toBe('2026-06-15')
     })
 
+    it('keeps a two-observation yearly match as a low-confidence candidate', () => {
+        const result = detectRecurring([
+            { date: date('2025-03-07'), amount: -30, recipient: 'PayPal', purpose: 'Fabletics subscription' },
+            { date: date('2026-03-06'), amount: -31, recipient: 'PayPal', purpose: 'Fabletics subscription' },
+        ])
+
+        expect(result).toHaveLength(1)
+        expect(result[0].cadence).toBe('yearly')
+        expect(result[0].confidence).toBe('candidate')
+    })
+
     it('detects recurring income separately from expenses', () => {
         const result = detectRecurring([
             { date: date('2025-01-01'), amount: 2500, sender: 'Employer', purpose: 'Salary' },

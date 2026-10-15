@@ -60,7 +60,8 @@ export function detectRecurring(
         series.push(toSeries(group, match, options.getStatementId ?? DEFAULT_STATEMENT_ID))
     }
 
-    return series.sort((a, b) => b.evidence.amountMedian - a.evidence.amountMedian)
+    const confidenceRank: Record<RecurrenceConfidence, number> = { confirmed: 0, probable: 1, candidate: 2 }
+    return series.sort((a, b) => confidenceRank[a.confidence] - confidenceRank[b.confidence] || b.evidence.amountMedian - a.evidence.amountMedian)
 }
 
 function toEvent(statement: BankStatement, index: number): Event | undefined {
@@ -178,13 +179,16 @@ function toSeries(
     const amountKind = getAmountKind(amounts, amountMedian, amountMad, yearlyChange, match.cadence)
     const last = sorted.at(-1)!
     const nextDate = addMonths(last.date, match.intervalMonths, match.endOfMonth)
+    const coverage = match.coveredCycles / match.expectedCycles
     const confidence: RecurrenceConfidence =
         sorted.length >= (match.cadence === 'yearly' ? 3 : 4) &&
         match.cadenceFit >= 0.85 &&
         match.dateFit >= 0.85 &&
         match.skippedCycles === 0
             ? 'confirmed'
-            : 'probable'
+            : sorted.length >= 3 && match.cadenceFit >= 0.7 && match.dateFit >= 0.75 && coverage >= 0.75
+              ? 'probable'
+              : 'candidate'
 
     const occurrences: RecurringOccurrence[] = sorted.map((event) => ({
         statementIndex: event.index,
