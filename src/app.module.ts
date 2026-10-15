@@ -7,6 +7,7 @@ import { CsvParserService } from './csv-parser/csv-parser.service.js'
 import { FinanceController } from './finance/finance.controller.js'
 import { FinanceService } from './finance/finance.service.js'
 import { RuleStoreService } from './finance/rule-store.service.js'
+import { LedgerStoreService } from './finance/ledger-store.service.js'
 
 @Module({
     imports: [
@@ -17,6 +18,6 @@ import { RuleStoreService } from './finance/rule-store.service.js'
         }),
     ],
     controllers: [AppController, FinanceController],
-    providers: [AppService, FinanceService, CsvParserService, RuleStoreService],
+    providers: [AppService, FinanceService, CsvParserService, RuleStoreService, LedgerStoreService],
 })
 export class AppModule {}

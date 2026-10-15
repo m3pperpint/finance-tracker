@@ -3,13 +3,20 @@ import type { FinanceGateway } from '../application/load-dashboard'
 
 const DEFAULT_API_BASE_URL = 'http://localhost:3000'
 
+export interface LedgerInfo {
+    id: string
+    name: string
+    importProfile?: string
+    sources: { id: string; originalName: string; importedAt: string }[]
+}
+
 export class FinanceApi implements FinanceGateway {
     private readonly baseUrl = (
         import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL
     ).replace(/\/$/, '')
 
     async loadDashboard(query: DashboardQuery): Promise<DashboardSnapshot> {
-        const file = encodeURIComponent(query.fileName)
+        const file = encodeURIComponent(query.ledgerId)
         const params = new URLSearchParams({
             mode: query.scope.mode,
             top: String(query.top),
@@ -31,37 +38,47 @@ export class FinanceApi implements FinanceGateway {
         )
     }
 
-    async getRecurring(fileName: string): Promise<RecurringSeries[]> {
-        return this.get<RecurringSeries[]>(`/finance/recurring/${encodeURIComponent(fileName)}`)
+    async getRecurring(ledgerId: string): Promise<RecurringSeries[]> {
+        return this.get<RecurringSeries[]>(`/finance/recurring/${encodeURIComponent(ledgerId)}`)
     }
 
-    async getRecurringSettings(fileName: string): Promise<RecurringSettings> {
-        return this.get<RecurringSettings>(`/finance/recurring/${encodeURIComponent(fileName)}/settings`)
+    async getRecurringSettings(ledgerId: string): Promise<RecurringSettings> {
+        return this.get<RecurringSettings>(`/finance/recurring/${encodeURIComponent(ledgerId)}/settings`)
     }
 
-    async saveRecurringAlias(fileName: string, targetId: string, seriesIds: string[], alias: string): Promise<{ targetId: string; alias: string | null; scan: RecurringObservationScan }> {
-        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/aliases/${encodeURIComponent(targetId)}`, 'PUT', { seriesIds, alias })
+    async saveRecurringAlias(ledgerId: string, targetId: string, seriesIds: string[], alias: string): Promise<{ targetId: string; alias: string | null; scan: RecurringObservationScan }> {
+        return this.send(`/finance/recurring/${encodeURIComponent(ledgerId)}/aliases/${encodeURIComponent(targetId)}`, 'PUT', { seriesIds, alias })
     }
 
-    async createRecurringGroup(fileName: string, seriesIds: string[]) {
-        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/groups`, 'POST', { seriesIds })
+    async createRecurringGroup(ledgerId: string, seriesIds: string[]) {
+        return this.send(`/finance/recurring/${encodeURIComponent(ledgerId)}/groups`, 'POST', { seriesIds })
     }
 
-    async deleteRecurringGroup(fileName: string, groupId: string) {
-        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/groups/${encodeURIComponent(groupId)}`, 'DELETE')
+    async deleteRecurringGroup(ledgerId: string, groupId: string) {
+        return this.send(`/finance/recurring/${encodeURIComponent(ledgerId)}/groups/${encodeURIComponent(groupId)}`, 'DELETE')
     }
 
-    async setRecurringDecision(fileName: string, seriesId: string, decision: Exclude<RecurringReviewStatus, 'pending'>) {
-        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/decisions/${encodeURIComponent(seriesId)}`, 'PUT', { decision })
+    async setRecurringDecision(ledgerId: string, seriesId: string, decision: Exclude<RecurringReviewStatus, 'pending'>) {
+        return this.send(`/finance/recurring/${encodeURIComponent(ledgerId)}/decisions/${encodeURIComponent(seriesId)}`, 'PUT', { decision })
     }
 
-    async setManualRecurring(fileName: string, statementId: string, direction: RecurrenceDirection | null) {
-        return this.send(`/finance/recurring/${encodeURIComponent(fileName)}/statements/${encodeURIComponent(statementId)}`, 'PUT', { direction })
+    async setManualRecurring(ledgerId: string, statementId: string, direction: RecurrenceDirection | null) {
+        return this.send(`/finance/recurring/${encodeURIComponent(ledgerId)}/statements/${encodeURIComponent(statementId)}`, 'PUT', { direction })
     }
 
-    async uploadStatement(file: File): Promise<{ fileName: string }> {
+    async getLedgers(): Promise<{ ledgers: LedgerInfo[]; unassignedFiles: string[] }> {
+        return this.get('/finance/ledgers')
+    }
+
+    async createLedger(name: string, files: string[], importProfile?: string): Promise<LedgerInfo> {
+        return this.send('/finance/ledgers', 'POST', { name, files, importProfile })
+    }
+
+    async uploadStatement(file: File, columnMappings: Record<string, string>, ledgerId: string): Promise<{ ledgerId: string; sourceId: string }> {
         const body = new FormData()
         body.append('file', file)
+        body.append('columnMappings', JSON.stringify(columnMappings))
+        body.append('ledgerId', ledgerId)
 
         const response = await fetch(`${this.baseUrl}/finance/upload`, {
             method: 'POST',
@@ -72,13 +89,21 @@ export class FinanceApi implements FinanceGateway {
             throw new Error(`Upload failed (${response.status})`)
         }
 
-        const result = (await response.json()) as { fileName?: string }
-        if (!result.fileName) throw new Error('The API did not return a filename')
-        return { fileName: result.fileName }
+        const result = (await response.json()) as { ledgerId?: string; sourceId?: string }
+        if (!result.ledgerId || !result.sourceId) throw new Error('The API did not return the saved statement source')
+        return { ledgerId: result.ledgerId, sourceId: result.sourceId }
     }
 
-    async getRules(fileName: string): Promise<any> {
-        return this.get(`/finance/rules/${encodeURIComponent(fileName)}`)
+    async getImportProfiles(): Promise<Record<string, Record<string, string>>> {
+        return this.get('/finance/import-profiles')
+    }
+
+    async saveImportProfile(name: string, mappings: Record<string, string>) {
+        return this.send('/finance/import-profiles', 'POST', { name, mappings })
+    }
+
+    async getRules(ledgerId: string): Promise<any> {
+        return this.get(`/finance/rules/${encodeURIComponent(ledgerId)}`)
     }
 
     async createCategory(body: { name: string; necessity: 'necessity' | 'convenience' }) {
@@ -93,16 +118,16 @@ export class FinanceApi implements FinanceGateway {
         return this.send(`/finance/categories/${encodeURIComponent(id)}`, 'DELETE')
     }
 
-    async createAlias(fileName: string, body: Record<string, unknown>) {
-        return this.send(`/finance/rules/${encodeURIComponent(fileName)}/aliases`, 'POST', body)
+    async createAlias(ledgerId: string, body: Record<string, unknown>) {
+        return this.send(`/finance/rules/${encodeURIComponent(ledgerId)}/aliases`, 'POST', body)
     }
 
-    async updateAlias(fileName: string, id: string, body: Record<string, unknown>) {
-        return this.send(`/finance/rules/${encodeURIComponent(fileName)}/aliases/${encodeURIComponent(id)}`, 'PUT', body)
+    async updateAlias(ledgerId: string, id: string, body: Record<string, unknown>) {
+        return this.send(`/finance/rules/${encodeURIComponent(ledgerId)}/aliases/${encodeURIComponent(id)}`, 'PUT', body)
     }
 
-    async deleteAlias(fileName: string, id: string) {
-        return this.send(`/finance/rules/${encodeURIComponent(fileName)}/aliases/${encodeURIComponent(id)}`, 'DELETE')
+    async deleteAlias(ledgerId: string, id: string) {
+        return this.send(`/finance/rules/${encodeURIComponent(ledgerId)}/aliases/${encodeURIComponent(id)}`, 'DELETE')
     }
 
     private async get<T>(path: string): Promise<T> {

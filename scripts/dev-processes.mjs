@@ -73,38 +73,19 @@ function stopExisting() {
     return true
 }
 
-function start() {
+async function start() {
     stopExisting()
     mkdirSync(stateDir, { recursive: true })
 
-    const children = [
-        ['backend', ['run', 'start:dev'], rootDir],
-        ['frontend', ['--prefix', 'frontend', 'run', 'dev'], rootDir],
-    ].map(([name, args, cwd]) => ({
-        name,
-        process: spawn(npmCommand, args, {
-            cwd,
+    const children = []
+    const startService = (name, args) => {
+        const child = spawn(npmCommand, args, {
+            cwd: rootDir,
             detached: process.platform !== 'win32',
             shell: process.platform === 'win32',
             stdio: 'inherit',
-        }),
-    }))
-
-    writeFileSync(
-        stateFile,
-        JSON.stringify({ pids: children.map(({ process: child }) => child.pid) }, null, 2)
-    )
-
-    let stopping = false
-    const shutdown = (code = 0) => {
-        if (stopping) return
-        stopping = true
-        for (const { process: child } of children) terminate(child.pid)
-        clearState()
-        process.exit(code)
-    }
-
-    for (const { name, process: child } of children) {
+        })
+        children.push({ name, process: child })
         child.on('error', (error) => {
             console.error(`${name} failed to start: ${error.message}`)
             shutdown(1)
@@ -115,10 +96,44 @@ function start() {
                 shutdown(code ?? 1)
             }
         })
+        writeFileSync(stateFile, JSON.stringify({ pids: children.map(({ process: item }) => item.pid) }, null, 2))
+        return child
+    }
+
+    let stopping = false
+    const shutdown = (code = 0) => {
+        if (stopping) return
+        stopping = true
+        for (const { process: child } of children) terminate(child.pid)
+        clearState()
+        process.exit(code)
     }
 
     process.on('SIGINT', () => shutdown())
     process.on('SIGTERM', () => shutdown())
+
+    const backend = startService('backend', ['run', 'start:dev'])
+    const deadline = Date.now() + 60_000
+    let backendReady = false
+    while (!stopping && Date.now() < deadline) {
+        if (backend.exitCode !== null) break
+        try {
+            const response = await fetch('http://127.0.0.1:3000/')
+            if (response.ok) { backendReady = true; break }
+        } catch {
+            // Nest is still compiling or binding its port.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    if (!backendReady) {
+        if (!stopping) {
+            console.error('Backend did not become ready within 60 seconds.')
+            shutdown(1)
+        }
+        return
+    }
+
+    startService('frontend', ['--prefix', 'frontend', 'run', 'dev'])
     console.log('Backend: http://localhost:3000')
     console.log('Frontend: http://localhost:5173')
     console.log('Run `npm run stop:all` from another terminal to stop both.')

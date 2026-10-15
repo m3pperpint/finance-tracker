@@ -7,7 +7,7 @@ import {
 
 export interface FinanceGateway {
     loadDashboard(query: DashboardQuery): Promise<DashboardSnapshot>
-    uploadStatement(file: File): Promise<{ fileName: string }>
+    uploadStatement(file: File, columnMappings: Record<string, string>, ledgerId: string): Promise<{ ledgerId: string; sourceId: string }>
 }
 
 export async function loadDashboard(

@@ -124,7 +124,7 @@ export interface SpendingPeriod {
 }
 
 export interface DashboardQuery {
-    fileName: string
+    ledgerId: string
     scope: FinanceScope
     top: number
 }
@@ -142,6 +142,7 @@ export interface DashboardSnapshot {
         monthly: SpendingPeriod[]
         yearly: SpendingPeriod[]
     }
+    importSummary?: { sourceCount: number; duplicateTransactionsRemoved: number }
 }
 
 export interface DashboardMetrics {

@@ -14,8 +14,6 @@ import {
     Delete,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
-import { basename, join } from 'path'
-
 import { FinanceService } from './finance.service.js'
 import {
     CsvColumnMappings,
@@ -25,22 +23,16 @@ import {
     FinanceScope,
     AliasRule,
 } from '../core/index.js'
-import { CsvParserService } from '../csv-parser/csv-parser.service.js'
 
 @Controller('finance')
 export class FinanceController {
-    private readonly uploadDirectory =
-        process.env.CSV_FILE_UPLOAD_DESTINATION || './data/uploads/csv'
-
-    constructor(
-        private readonly financeService: FinanceService,
-        private csvParsingService: CsvParserService
-    ) {}
+    constructor(private readonly financeService: FinanceService) {}
 
     @Post('upload')
     @UseInterceptors(FileInterceptor('file'))
     uploadCSVFile(
         @Body('columnMappings') columnMappingsString: string,
+        @Body('ledgerId') ledgerId: string,
         @UploadedFile(
             new ParseFilePipe({
                 validators: [
@@ -50,21 +42,43 @@ export class FinanceController {
         )
         file: Express.Multer.File
     ) {
-        const columnMappings = columnMappingsString
-            ? (JSON.parse(columnMappingsString) as CsvColumnMappings)
-            : {}
-
-        this.csvParsingService.overrideCsvColumnNames(
-            join(this.uploadDirectory, file.filename),
-            columnMappings
-        )
-
-        return { message: 'File uploaded successfully!', fileName: file.filename }
+        let columnMappings: CsvColumnMappings
+        try {
+            columnMappings = columnMappingsString ? JSON.parse(columnMappingsString) as CsvColumnMappings : {}
+        } catch {
+            throw new BadRequestException('columnMappings must be valid JSON')
+        }
+        if (Object.values(columnMappings).some((header) => typeof header !== 'string')) {
+            throw new BadRequestException('columnMappings values must be CSV header names')
+        }
+        this.requireLedger(ledgerId)
+        const result = this.financeService.addUploadedFile(ledgerId, file.path, file.originalname, columnMappings)
+        return { ledgerId: result.ledgerId, sourceId: result.source.id }
     }
 
-    @Get('dashboard/:fileName')
+    @Get('ledgers')
+    getLedgers() { return this.financeService.getLedgers() }
+
+    @Post('ledgers')
+    createLedger(@Body() body: { name?: string; files?: string[]; importProfile?: string }) {
+        const files = Array.isArray(body.files) ? body.files.filter((value): value is string => typeof value === 'string') : []
+        if (body.files !== undefined && (!Array.isArray(body.files) || files.length !== body.files.length)) throw new BadRequestException('files must be a list of CSV filenames')
+        return this.financeService.createLedger(this.requireText(body.name, 'name'), files, typeof body.importProfile === 'string' ? body.importProfile : undefined)
+    }
+
+    @Get('import-profiles')
+    getImportProfiles() { return this.financeService.getImportProfiles() }
+
+    @Post('import-profiles')
+    saveImportProfile(@Body() body: { name?: string; mappings?: Record<string, string> }) {
+        if (typeof body.mappings !== 'object' || !body.mappings || Array.isArray(body.mappings)) throw new BadRequestException('mappings must be an object')
+        if (Object.values(body.mappings).some((header) => typeof header !== 'string')) throw new BadRequestException('mapping values must be CSV header names')
+        return this.financeService.saveImportProfile(this.requireText(body.name, 'name'), body.mappings)
+    }
+
+    @Get('dashboard/:ledgerId')
     getDashboard(
-        @Param('fileName') fileName: string,
+        @Param('ledgerId') ledgerId: string,
         @Query('mode') mode = 'month',
         @Query('month') month?: string,
         @Query('year') year?: string,
@@ -78,56 +92,56 @@ export class FinanceController {
         }
 
         return this.financeService.getDashboard(
-            this.getFilePath(fileName),
+            this.requireLedger(ledgerId),
             this.parseScope(mode, month, year, from, to),
             requestedTop
         )
     }
 
-    @Get('rules/:fileName')
-    getRules(@Param('fileName') fileName: string) {
-        return this.financeService.getRules(this.getFilePath(fileName))
+    @Get('rules/:ledgerId')
+    getRules(@Param('ledgerId') ledgerId: string) {
+        return this.financeService.getRules(this.requireLedger(ledgerId))
     }
 
-    @Get('recurring/:fileName')
-    getRecurring(@Param('fileName') fileName: string) {
-        return this.financeService.getRecurring(this.getFilePath(fileName))
+    @Get('recurring/:ledgerId')
+    getRecurring(@Param('ledgerId') ledgerId: string) {
+        return this.financeService.getRecurring(this.requireLedger(ledgerId))
     }
 
-    @Get('recurring/:fileName/settings')
-    getRecurringSettings(@Param('fileName') fileName: string) {
-        return this.financeService.getRecurringSettings(this.getFilePath(fileName))
+    @Get('recurring/:ledgerId/settings')
+    getRecurringSettings(@Param('ledgerId') ledgerId: string) {
+        return this.financeService.getRecurringSettings(this.requireLedger(ledgerId))
     }
 
-    @Put('recurring/:fileName/aliases/:targetId')
-    setRecurringAlias(@Param('fileName') fileName: string, @Param('targetId') targetId: string, @Body() body: Record<string, unknown>) {
+    @Put('recurring/:ledgerId/aliases/:targetId')
+    setRecurringAlias(@Param('ledgerId') ledgerId: string, @Param('targetId') targetId: string, @Body() body: Record<string, unknown>) {
         const alias = typeof body.alias === 'string' ? body.alias.trim() || undefined : undefined
         const seriesIds = Array.isArray(body.seriesIds) ? body.seriesIds.filter((value): value is string => typeof value === 'string') : []
         if (!seriesIds.length) throw new BadRequestException('seriesIds must contain at least one recurring series id')
-        return this.financeService.setRecurringAlias(this.getFilePath(fileName), targetId, alias, seriesIds)
+        return this.financeService.setRecurringAlias(this.requireLedger(ledgerId), targetId, alias, seriesIds)
     }
 
-    @Post('recurring/:fileName/groups')
-    createRecurringGroup(@Param('fileName') fileName: string, @Body() body: Record<string, unknown>) {
+    @Post('recurring/:ledgerId/groups')
+    createRecurringGroup(@Param('ledgerId') ledgerId: string, @Body() body: Record<string, unknown>) {
         const seriesIds = Array.isArray(body.seriesIds) ? body.seriesIds.filter((value): value is string => typeof value === 'string') : []
-        return this.financeService.createRecurringGroup(this.getFilePath(fileName), seriesIds)
+        return this.financeService.createRecurringGroup(this.requireLedger(ledgerId), seriesIds)
     }
 
-    @Delete('recurring/:fileName/groups/:groupId')
-    deleteRecurringGroup(@Param('fileName') fileName: string, @Param('groupId') groupId: string) {
-        return this.financeService.deleteRecurringGroup(this.getFilePath(fileName), groupId)
+    @Delete('recurring/:ledgerId/groups/:groupId')
+    deleteRecurringGroup(@Param('ledgerId') ledgerId: string, @Param('groupId') groupId: string) {
+        return this.financeService.deleteRecurringGroup(this.requireLedger(ledgerId), groupId)
     }
 
-    @Put('recurring/:fileName/decisions/:seriesId')
-    setRecurringDecision(@Param('fileName') fileName: string, @Param('seriesId') seriesId: string, @Body() body: Record<string, unknown>) {
+    @Put('recurring/:ledgerId/decisions/:seriesId')
+    setRecurringDecision(@Param('ledgerId') ledgerId: string, @Param('seriesId') seriesId: string, @Body() body: Record<string, unknown>) {
         if (body.decision !== 'confirmed' && body.decision !== 'denied') throw new BadRequestException('decision must be confirmed or denied')
-        return this.financeService.setRecurringDecision(this.getFilePath(fileName), seriesId, body.decision)
+        return this.financeService.setRecurringDecision(this.requireLedger(ledgerId), seriesId, body.decision)
     }
 
-    @Put('recurring/:fileName/statements/:statementId')
-    setManualRecurring(@Param('fileName') fileName: string, @Param('statementId') statementId: string, @Body() body: Record<string, unknown>) {
+    @Put('recurring/:ledgerId/statements/:statementId')
+    setManualRecurring(@Param('ledgerId') ledgerId: string, @Param('statementId') statementId: string, @Body() body: Record<string, unknown>) {
         if (body.direction !== 'income' && body.direction !== 'expense' && body.direction !== null) throw new BadRequestException('direction must be income, expense, or null')
-        return this.financeService.setManualRecurring(this.getFilePath(fileName), statementId, body.direction ?? undefined)
+        return this.financeService.setManualRecurring(this.requireLedger(ledgerId), statementId, body.direction ?? undefined)
     }
 
     @Post('categories')
@@ -145,26 +159,26 @@ export class FinanceController {
         return this.financeService.deleteCategory(id)
     }
 
-    @Post('rules/:fileName/aliases')
-    createAlias(@Param('fileName') fileName: string, @Body() body: Record<string, unknown>) {
-        return this.financeService.createAlias(this.getFilePath(fileName), this.parseAlias(body))
+    @Post('rules/:ledgerId/aliases')
+    createAlias(@Param('ledgerId') ledgerId: string, @Body() body: Record<string, unknown>) {
+        return this.financeService.createAlias(this.requireLedger(ledgerId), this.parseAlias(body))
     }
 
-    @Put('rules/:fileName/aliases/:id')
-    updateAlias(@Param('fileName') fileName: string, @Param('id') id: string, @Body() body: Record<string, unknown>) {
-        return this.financeService.updateAlias(this.getFilePath(fileName), id, this.parseAliasPatch(body))
+    @Put('rules/:ledgerId/aliases/:id')
+    updateAlias(@Param('ledgerId') ledgerId: string, @Param('id') id: string, @Body() body: Record<string, unknown>) {
+        return this.financeService.updateAlias(this.requireLedger(ledgerId), id, this.parseAliasPatch(body))
     }
 
-    @Delete('rules/:fileName/aliases/:id')
-    deleteAlias(@Param('fileName') fileName: string, @Param('id') id: string) {
-        return this.financeService.deleteAlias(this.getFilePath(fileName), id)
+    @Delete('rules/:ledgerId/aliases/:id')
+    deleteAlias(@Param('ledgerId') ledgerId: string, @Param('id') id: string) {
+        return this.financeService.deleteAlias(this.requireLedger(ledgerId), id)
     }
 
-    @Get('calculate/execution-types-sums/:fileName')
+    @Get('calculate/execution-types-sums/:ledgerId')
     getExecutionTypesWithAmounts(
-        @Param('fileName') fileName: string
+        @Param('ledgerId') ledgerId: string
     ): ExecutionTypeWithAmounts[] | { message: string } {
-        const appendedFileName = this.getFilePath(fileName)
+        const appendedFileName = this.requireLedger(ledgerId)
         const result =
             this.financeService.getExecutionTypesWithAmounts(appendedFileName)
         if (!result)
@@ -174,14 +188,14 @@ export class FinanceController {
         return result
     }
 
-    @Get('calculate/top-spending-categories/:fileName')
+    @Get('calculate/top-spending-categories/:ledgerId')
     getTopSpendingCategoriesForMonth(
-        @Param('fileName') fileName: string,
+        @Param('ledgerId') ledgerId: string,
         @Query('top') top = '3',
         @Query('month') month = '1',
         @Query('year') year = '2024'
     ): TopSpendingCategoryForMonth[] | { message: string } {
-        const appendedFileName = this.getFilePath(fileName)
+        const appendedFileName = this.requireLedger(ledgerId)
         const result = this.financeService.getTopSpendingCategoriesForMonth(
             appendedFileName,
             Number(top),
@@ -195,11 +209,11 @@ export class FinanceController {
         return result
     }
 
-    @Get('calculate/most-amount-per-weekday/:fileName')
+    @Get('calculate/most-amount-per-weekday/:ledgerId')
     getMostAmountSpentPerWeekday(
-        @Param('fileName') fileName: string
+        @Param('ledgerId') ledgerId: string
     ): AmountPerWeekday[] | { message: string } {
-        const appendedFileName = this.getFilePath(fileName)
+        const appendedFileName = this.requireLedger(ledgerId)
         const result =
             this.financeService.getMostAmountSpentPerWeekday(appendedFileName)
         if (!result || result.length === 0)
@@ -209,11 +223,11 @@ export class FinanceController {
         return result
     }
 
-    @Get('calculate/highest-spending-day/:fileName')
+    @Get('calculate/highest-spending-day/:ledgerId')
     getHighestSpendingDay(
-        @Param('fileName') fileName: string
+        @Param('ledgerId') ledgerId: string
     ): AmountPerWeekday | { message: string } {
-        const appendedFileName = this.getFilePath(fileName)
+        const appendedFileName = this.requireLedger(ledgerId)
         const result =
             this.financeService.getHighestSpendingDay(appendedFileName)
         if (!result)
@@ -223,12 +237,9 @@ export class FinanceController {
         return result
     }
 
-    private getFilePath(fileName: string): string {
-        const safeFileName = basename(fileName)
-        if (!fileName || safeFileName !== fileName || ['.', '..'].includes(safeFileName)) {
-            throw new BadRequestException('fileName must be a filename in the upload directory')
-        }
-        return join(this.uploadDirectory, safeFileName)
+    private requireLedger(ledgerId: string): string {
+        this.financeService.getLedger(ledgerId)
+        return ledgerId
     }
 
     private requireText(value: unknown, field: string): string {

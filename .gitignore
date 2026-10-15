@@ -70,4 +70,5 @@ data/uploads/*
 !/data/uploads/csv/
 !/data/uploads/csv/bank_statements.csv
 !/data/uploads/csv/bank_statementsWrongHeader.csv
+/data/uploads/csv/ledgers/
 data/finance-rules.json

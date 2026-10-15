@@ -13,6 +13,21 @@ const knownHeaders: Record<string, string> = {
     Empfänger: 'recipient',
     Empfaenger: 'recipient',
     Verwendungszweck: 'purpose',
+    date: 'date',
+    'transaction date': 'date',
+    'booking date': 'date',
+    'value date': 'date_executed',
+    'transaction type': 'transaction_type',
+    description: 'text',
+    'transaction description': 'text',
+    amount: 'amount',
+    currency: 'currency',
+    category: 'category',
+    sender: 'sender',
+    recipient: 'recipient',
+    payee: 'recipient',
+    payer: 'sender',
+    purpose: 'purpose',
 }
 
 /**
@@ -31,14 +46,15 @@ export class CsvParser {
         fileName: string,
         columnMapping: Record<string, string>
     ): void {
-        const rows = readFileSync(fileName, 'utf-8').split(/\r?\n/)
-        const headers = rows[0].split(';').map((cell) => cell.trim())
+        const rows = this.readCsvText(fileName).split(/\r?\n/)
+        const delimiter = this.detectDelimiter(rows[0] ?? '')
+        const headers = this.parseRecords(rows[0] ?? '', delimiter)[0] ?? []
 
         const updatedHeaders = headers.map((header) =>
             this.getMappedHeader(header, columnMapping)
         )
 
-        rows[0] = updatedHeaders.join(';')
+        rows[0] = updatedHeaders.join(delimiter)
         writeFileSync(fileName, rows.join('\r\n'), 'utf-8')
     }
 
@@ -49,18 +65,25 @@ export class CsvParser {
      * @param fileName - Path to the CSV file.
      * @returns Array of objects representing CSV rows.
      */
-    parseCSVData(fileName: string): Record<string, string>[] {
-        const rows = readFileSync(fileName, 'utf-8').split(/\r?\n/)
-        if (!rows.length) return []
+    parseCSVData(fileName: string, columnMapping: Record<string, string> = {}): Record<string, string>[] {
+        const content = this.readCsvText(fileName)
+        const delimiter = this.detectDelimiter(content)
+        const [rawHeaders = [], ...rows] = this.parseRecords(content, delimiter)
+        const headers = rawHeaders.map((header) => this.getMappedHeader(header, columnMapping))
+        return rows.filter((row) => row.some((cell) => cell.trim())).map((row) =>
+            Object.fromEntries(headers.flatMap((header, index) => row[index] === undefined ? [] : [[header, row[index].trim()]]))
+        )
+    }
 
-        const headers = rows[0]
-            .split(';')
-            .map((h) => this.normalizeHeader(h))
-
-        return rows
-            .slice(1)
-            .map((row) => this.parseRow(row, headers))
-            .filter((row): row is Record<string, string> => row !== null)
+    private readCsvText(fileName: string): string {
+        const buffer = readFileSync(fileName)
+        if (buffer[0] === 0xff && buffer[1] === 0xfe) return buffer.toString('utf16le', 2)
+        if (buffer[0] === 0xfe && buffer[1] === 0xff) {
+            const swapped = Buffer.from(buffer.subarray(2))
+            for (let i = 0; i + 1 < swapped.length; i += 2) [swapped[i], swapped[i + 1]] = [swapped[i + 1], swapped[i]]
+            return swapped.toString('utf16le')
+        }
+        return buffer.toString('utf8').replace(/^\uFEFF/, '')
     }
 
     /**
@@ -70,21 +93,28 @@ export class CsvParser {
      * @param row - CSV row string
      * @param headers - Array of header names
      */
-    private parseRow(
-        row: string,
-        headers: string[]
-    ): Record<string, string> | null {
-        if (!row?.trim()) return null
+    private detectDelimiter(content: string): string {
+        const firstLine = content.split(/\r?\n/, 1)[0] ?? ''
+        return [';', ',', '\t'].sort((a, b) => firstLine.split(b).length - firstLine.split(a).length)[0]
+    }
 
-        const rowData = row.split(';').map((cell) => cell.trim())
-        const obj: Record<string, string> = {}
-
-        headers.forEach((header, index) => {
-            const value = rowData[index]
-            if (value !== undefined) obj[header] = value
-        })
-
-        return obj
+    private parseRecords(content: string, delimiter: string): string[][] {
+        const records: string[][] = []
+        let row: string[] = [], cell = '', quoted = false
+        for (let i = 0; i < content.length; i++) {
+            const char = content[i]
+            if (char === '"') {
+                if (quoted && content[i + 1] === '"') { cell += '"'; i++ }
+                else quoted = !quoted
+            } else if (!quoted && char === delimiter) { row.push(cell); cell = '' }
+            else if (!quoted && (char === '\n' || char === '\r')) {
+                if (char === '\r' && content[i + 1] === '\n') i++
+                row.push(cell); records.push(row); row = []; cell = ''
+            } else cell += char
+        }
+        row.push(cell)
+        if (row.some((value) => value.length) || records.length === 0) records.push(row)
+        return records
     }
 
     /**
@@ -106,7 +136,8 @@ export class CsvParser {
     }
 
     private normalizeHeader(header: string): string {
-        return knownHeaders[header.replace(/^\uFEFF/, '').trim()] ??
-            header.replace(/^\uFEFF/, '').trim()
+        const clean = header.replace(/^\uFEFF/, '').trim()
+        const known = Object.entries(knownHeaders).find(([name]) => name.toLocaleLowerCase() === clean.toLocaleLowerCase())?.[1]
+        return known ?? clean
     }
 }

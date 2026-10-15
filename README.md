@@ -1,6 +1,6 @@
 # Finance Tracker
 
-Finance Tracker is a NestJS REST API plus a small Svelte dashboard for analyzing semicolon-separated German bank-statement CSV files. It supports `dd.MM.yyyy` dates and comma-decimal amounts such as `-7,95`.
+Finance Tracker is a NestJS REST API plus a small Svelte dashboard for analyzing bank-statement CSV files. It detects semicolon, comma, and tab delimiters, supports quoted cells and UTF-8/UTF-16 files, and parses `dd.MM.yyyy` dates and comma-decimal amounts such as `-7,95`.
 
 The checked-in example is anonymized. Personal CSV files belong in `data/uploads/csv`, but are ignored by Git unless they are one of the explicitly allowed example files.
 
@@ -72,7 +72,9 @@ npm run start:prod
 
 ## Use the dashboard
 
-The dashboard defaults to `15aug2024_15aug_2026.csv` and has two clearly separated areas:
+The dashboard works with account ledgers. A ledger combines one or more statement CSVs belonging to the same account or person and has its own category aliases and recurring-payment decisions. When there is one ledger, it opens automatically; otherwise choose one from the selector.
+
+The dashboard has two clearly separated areas:
 
 - **Selected view**: the chosen month, year, or all-time scope. Its cards, transaction types, all spending categories, weekdays, and highest weekday all use the same scope.
 - **Overall - independent**: complete-history trends. These do not change when the selected view changes. Their own Monthly trend / Yearly trend toggle controls the chart grain.
@@ -83,11 +85,11 @@ In the timeframe control:
 - **Year** uses the same arrows to move between available years. Click the year label to choose another available year.
 - **All time** aggregates the complete file and has no period navigation arrows.
 
-The statement filename field loads a file already present in `data/uploads/csv`. The Upload CSV control sends a local file through the API and then selects the returned filename automatically. The Refresh button reloads the current scope.
+Upload CSVs into an existing ledger to combine them, or create a ledger and select any existing loose CSV files to group together. Uploading previews the headers and lets you map columns to app fields. Amount is needed for spending totals; date enables time scopes; description fields add transaction detail and keyword suggestions. Named import profiles save reusable column mappings. Category aliases and recurring decisions are scoped to the ledger, while category definitions are shared. The dashboard reports the number of combined files and overlapping rows skipped. Refresh reloads the selected ledger.
 
 ## Use a CSV already in the upload folder
 
-Put a CSV in `data/uploads/csv`, then enter its filename in the dashboard or pass only the filename to the API. Do not pass the full path. The default upload directory is `./data/uploads/csv`, relative to the directory where the app is started. Override it with `CSV_FILE_UPLOAD_DESTINATION` if needed.
+Put a CSV in `data/uploads/csv`; unassigned files appear in the ledger creation screen so they can be grouped into the correct account. Once grouped, files are copied into a UUID-named ledger folder alongside a `manifest.json` containing the ledger name, source list, hashes, and column mappings. Keep each ledger to one account/person. Files added to a ledger are aggregated with existing sources. Exact transaction matches across separate files are suppressed using date, amount, currency, and description; repeated matching rows within one file are retained. The default upload directory is `./data/uploads/csv`, relative to the directory where the app is started. Override it with `CSV_FILE_UPLOAD_DESTINATION` if needed.
 
 The supplied anonymized example is:
 
@@ -95,12 +97,12 @@ The supplied anonymized example is:
 data/uploads/csv/bank_statements.csv
 ```
 
-Example API calls:
+Create a ledger from loose files:
 
 ```powershell
-curl "http://localhost:3000/finance/dashboard/bank_statements.csv?mode=month&month=8&year=2025&top=5"
-curl "http://localhost:3000/finance/dashboard/bank_statements.csv?mode=year&year=2025&top=5"
-curl "http://localhost:3000/finance/dashboard/bank_statements.csv?mode=all&top=5"
+$body = @{ name = 'Main account'; files = @('2025.csv'); importProfile = 'My bank' } | ConvertTo-Json
+$ledger = Invoke-RestMethod -Method Post -Uri http://localhost:3000/finance/ledgers -ContentType 'application/json' -Body $body
+curl "http://localhost:3000/finance/dashboard/$($ledger.id)?mode=all&top=5"
 ```
 
 The dashboard endpoint returns the scoped metrics plus every spending category with its definition, total, transaction count, share of total spending, necessity/control profile, and price pattern. It also returns the category catalog and complete-history monthly/yearly evolution used by the Overall section. Negative transactions without a source category are reported as `Uncategorized`, so category shares add up to total spending.
@@ -116,14 +118,15 @@ curl "http://localhost:3000/finance/calculate/top-spending-categories/bank_state
 
 ## Upload through the API
 
-The upload endpoint stores the file in the upload directory and returns the generated filename. German headers are recognized automatically, so `columnMappings` is optional:
+Create an empty ledger first, then upload into it. German headers are recognized automatically, so `columnMappings` is optional:
 
 ```powershell
 curl -X POST http://localhost:3000/finance/upload `
-  -F "file=@path/to/statement.csv;type=text/csv"
+  -F "file=@path/to/statement.csv;type=text/csv" `
+  -F "ledgerId=LEDGER_UUID"
 ```
 
-You can provide explicit mappings for another bank's headers. The mapping format is canonical field name to original CSV header:
+You can provide explicit mappings for another bank's headers. The mapping format is canonical field name to original CSV header. Mappings can also be saved and reused as named profiles in the upload UI:
 
 ```powershell
 curl -X POST http://localhost:3000/finance/upload `
@@ -131,17 +134,19 @@ curl -X POST http://localhost:3000/finance/upload `
   -F 'columnMappings={"date":"Buchungstag","date_executed":"Wertstellung","transaction_type":"Umsatzart","text":"Buchungstext","amount":"Betrag","currency":"Währung","bank_number_owner":"IBAN Kontoinhaber","category":"Kategorie"}'
 ```
 
-Use the `fileName` returned by the upload response with the dashboard or calculation endpoints. Uploaded files are limited to 1 MB.
+Supply `ledgerId` and optional `columnMappings` with each upload. The response includes `ledgerId` and `sourceId`. Uploaded files are limited to 1 MB.
 
 ## API endpoints
 
 - `GET /` - health/status message.
-- `POST /finance/upload` - multipart upload with field name `file`; optional `columnMappings` JSON field.
-- `GET /finance/dashboard/:fileName?mode=month&month=8&year=2025&top=5` - one consistent scoped dashboard plus all spending categories, category definitions, available periods, and complete-history monthly/yearly evolution. `top` is retained for compatibility; the dashboard report is no longer limited to five categories.
-- `GET /finance/calculate/execution-types-sums/:fileName` - totals grouped by transaction type.
-- `GET /finance/calculate/most-amount-per-weekday/:fileName` - totals grouped by weekday.
-- `GET /finance/calculate/highest-spending-day/:fileName` - weekday with the highest total.
-- `GET /finance/calculate/top-spending-categories/:fileName?top=3&month=8&year=2025` - top spending categories for a selected month and year.
+- `GET /finance/ledgers` and `POST /finance/ledgers` - list or create a ledger; creation accepts `name`, optional loose `files`, and optional `importProfile`.
+- `POST /finance/upload` - multipart upload with required `ledgerId` and `file`; optional `columnMappings` JSON field.
+- `GET /finance/import-profiles` and `POST /finance/import-profiles` - list and save named column-mapping profiles.
+- `GET /finance/dashboard/:ledgerId?mode=month&month=8&year=2025&top=5` - consistent scoped dashboard plus all spending categories, category definitions, available periods, complete-history evolution, and import summary.
+- `GET /finance/calculate/execution-types-sums/:ledgerId` - totals grouped by transaction type.
+- `GET /finance/calculate/most-amount-per-weekday/:ledgerId` - totals grouped by weekday.
+- `GET /finance/calculate/highest-spending-day/:ledgerId` - weekday with the highest total.
+- `GET /finance/calculate/top-spending-categories/:ledgerId?top=3&month=8&year=2025` - top spending categories for a selected month and year.
 
 Calculations use these canonical fields: `date`, `date_executed`, `transaction_type`, `text`, `amount`, `currency`, `bank_number_owner`, and `category`. Negative amounts are treated as spending by the category calculation.
 
