@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { BadRequestException, Injectable } from '@nestjs/common'
 import { FinanceAnalyzer, BankStatement, FinanceScope } from '../core'
 import { CsvParserService } from '../csv-parser/csv-parser.service'
 import { mapRowToBankStatement } from '../core/common/helpers/finance-mapping.helper'
@@ -144,7 +144,16 @@ export class FinanceService {
         return { ...result, scan }
     }
 
-    createRecurringGroup(ledgerId: string, seriesIds: string[]) { return this.ruleStore.createRecurringGroup(ledgerId, seriesIds) }
+    createRecurringGroup(ledgerId: string, seriesIds: string[]) {
+        const selectedIds = new Set(seriesIds)
+        const selected = this.getRecurring(ledgerId).filter((series) => selectedIds.has(series.id))
+        if (selected.length !== selectedIds.size) throw new BadRequestException('One or more recurring series are no longer available')
+        const first = selected[0]
+        if (selected.some((series) => series.direction !== first.direction || series.currency !== first.currency || series.cadence !== first.cadence || series.intervalMonths !== first.intervalMonths)) {
+            throw new BadRequestException('Recurring series can only be merged when direction, currency, and cadence match')
+        }
+        return this.ruleStore.createRecurringGroup(ledgerId, seriesIds)
+    }
     deleteRecurringGroup(ledgerId: string, groupId: string) { return this.ruleStore.deleteRecurringGroup(ledgerId, groupId) }
 
     scanRecurring(ledgerId: string, seriesIds: string[], alias?: string, currentObservationIds?: string[]) {

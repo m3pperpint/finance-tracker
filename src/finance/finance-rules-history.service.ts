@@ -101,7 +101,7 @@ export class FinanceRulesHistoryService {
         let state = structuredClone(baseline.snapshot)
         for (const entry of entries) {
             if (entry.revision > revision) break
-            if (entry.kind === 'change') for (const change of entry.changes) state = this.applyChange(state, change, true)
+            if (entry.kind === 'change') state = this.applyChanges(state, entry.changes)
         }
         return state
     }
@@ -198,6 +198,55 @@ export class FinanceRulesHistoryService {
         const removed = changes.filter((change) => change.action === 'removed').length
         const changed = changes.filter((change) => change.action === 'changed' || change.action === 'moved').length
         return `${added} added, ${changed} changed, ${removed} removed`
+    }
+
+    private applyChanges(state: RuleRecord, changes: RuleChange[]): RuleRecord {
+        const entityChanges = new Map<string, RuleChange[]>()
+        for (const change of changes) {
+            if (!change.entityId) {
+                state = this.applyChange(state, change, true)
+                continue
+            }
+            entityChanges.set(change.path, [...(entityChanges.get(change.path) ?? []), change])
+        }
+
+        for (const [path, collectionChanges] of entityChanges) {
+            const collection = this.getPointer(state, path)
+            if (!Array.isArray(collection)) throw new Error(`Invalid history collection: ${path}`)
+            let result = [...collection]
+            for (const change of collectionChanges) {
+                const existing = result.findIndex((item) => this.isRecord(item) && item.id === change.entityId)
+                if (change.action === 'removed') {
+                    if (existing >= 0) result.splice(existing, 1)
+                } else {
+                    const item = structuredClone(change.after as RuleRecord)
+                    if (existing >= 0) result.splice(existing, 1)
+                    result.push(item)
+                }
+            }
+
+            const targetIndexes = new Map(collectionChanges
+                .filter((change) => change.action !== 'removed' && change.afterIndex !== undefined)
+                .map((change) => [change.entityId!, change.afterIndex!]))
+            const positioned = new Map<number, unknown>()
+            const remaining: unknown[] = []
+            for (const item of result) {
+                const targetIndex = this.isRecord(item) && typeof item.id === 'string'
+                    ? targetIndexes.get(item.id)
+                    : undefined
+                if (targetIndex === undefined) remaining.push(item)
+                else positioned.set(targetIndex, item)
+            }
+            const ordered: unknown[] = []
+            const length = result.length
+            for (let index = 0; index < length; index += 1) {
+                if (positioned.has(index)) ordered.push(positioned.get(index))
+                else ordered.push(remaining.shift())
+            }
+            const finalCollection = ordered.filter((item) => item !== undefined)
+            collection.splice(0, collection.length, ...finalCollection)
+        }
+        return state
     }
 
     private applyChange(state: RuleRecord, change: RuleChange, forward: boolean): RuleRecord {

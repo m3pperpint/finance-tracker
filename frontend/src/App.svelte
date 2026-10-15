@@ -871,11 +871,11 @@
             const clusters: typeof occurrences[] = []
             for (const occurrence of occurrences) {
                 const cluster = clusters.at(-1)
-                const previous = cluster?.at(-1)
-                const daysApart = previous
+                const first = cluster?.[0]
+                const daysApart = first
                     ? Math.abs(
                           (new Date(`${occurrence.date}T00:00:00`).getTime() -
-                              new Date(`${previous.date}T00:00:00`).getTime()) /
+                              new Date(`${first.date}T00:00:00`).getTime()) /
                               86_400_000
                       )
                     : Number.POSITIVE_INFINITY
