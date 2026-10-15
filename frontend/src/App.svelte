@@ -10,6 +10,7 @@
         ChevronDown,
         ChevronLeft,
         ChevronRight,
+        Copy,
         FileSpreadsheet,
         Filter,
         FolderKanban,
@@ -39,7 +40,10 @@
         RecurringSettings,
         ViewMode,
     } from '$lib/domain/finance'
-    import { FinanceApi, type LedgerInfo } from '$lib/infrastructure/finance-api'
+    import {
+        FinanceApi,
+        type LedgerInfo,
+    } from '$lib/infrastructure/finance-api'
     import Badge from '$lib/components/ui/Badge.svelte'
     import Button from '$lib/components/ui/Button.svelte'
     import Card from '$lib/components/ui/Card.svelte'
@@ -151,6 +155,15 @@
     let newLedgerName = ''
     let creatingLedger = false
     let dashboard: DashboardView | null = null
+    let comparisonDashboard: DashboardView | null = null
+    let comparePeriods = false
+    let comparisonMonthKey = ''
+    let comparisonYear = new Date().getFullYear() - 1
+    let comparisonFromDate = ''
+    let comparisonToDate = ''
+    let comparisonLoading = false
+    let comparisonError = ''
+    let comparisonRequest = 0
     let recurring: RecurringSeries[] = []
     let recurringSettings: RecurringSettings = {
         aliases: {},
@@ -164,7 +177,8 @@
     let importProfile = ''
     let newLedgerRulesTemplate: 'generic' | 'scratch' = 'generic'
     let profileName = ''
-    let importProfiles: { name: string; mappings: Record<string, string> }[] = []
+    let importProfiles: { name: string; mappings: Record<string, string> }[] =
+        []
     let loading = false
     let checkingLedgers = true
     let saving = false
@@ -192,18 +206,22 @@
     let statementFilter: 'all' | 'matched' | 'unmatched' | 'conflict' = 'all'
     let statementTypeFilter = 'all'
     let statementLimit = 100
-    let aliasCategorySearch: Record<string, string> = {}
-    let aliasCategoryExpanded: Record<string, boolean> = {}
+    let categoryNavSearch = ''
+    let categoriesExpanded = true
+    let selectedAliasId = ''
+    let copiedAliasId = ''
+    let showAliasCreateDialog = false
     let aliasSort: AliasSort = 'usage-desc'
     let aliasUsageFilter: AliasUsageFilter = 'all'
     let aliasFieldFilter: Alias['field'] | 'all' = 'all'
     let aliasCategoryFilter = 'all'
     let selectedRecurringIds: string[] = []
     let recurringDialog: {
-        kind: 'alias' | 'observations'
+        kind: 'alias' | 'observations' | 'end-date'
         row: RecurringRow
     } | null = null
     let recurringAliasDraft = ''
+    let recurringEndDateDraft = ''
     let recurringAliasScan: RecurringObservationScan | null = null
     let recurringAliasScanning = false
     let recurringObservationLimit = 100
@@ -277,6 +295,50 @@
     $: activePeriod = comparisonPeriods.find(
         (period) => period.key === activePeriodKey
     )
+    $: comparedCategories = [
+        ...new Set([
+            ...(dashboard?.categories ?? []).map((item) => item.category),
+            ...(comparisonDashboard?.categories ?? []).map(
+                (item) => item.category
+            ),
+        ]),
+    ]
+        .sort()
+        .map((category) => {
+            const current =
+                dashboard?.categories.find((item) => item.category === category)
+                    ?.totalAmount ?? 0
+            const compared =
+                comparisonDashboard?.categories.find(
+                    (item) => item.category === category
+                )?.totalAmount ?? 0
+            return {
+                category,
+                current,
+                compared,
+                difference: current - compared,
+            }
+        })
+    $: comparisonMetrics = [
+        {
+            label: 'Spending',
+            current: dashboard?.metrics.spending,
+            compared: comparisonDashboard?.metrics.spending,
+        },
+        {
+            label: 'Income',
+            current: dashboard?.metrics.income,
+            compared: comparisonDashboard?.metrics.income,
+        },
+        {
+            label: 'Net movement',
+            current: dashboard?.metrics.netMovement,
+            compared: comparisonDashboard?.metrics.netMovement,
+        },
+    ]
+    $: comparisonUnavailable =
+        !comparisonScope() ||
+        sameScope(comparisonScope() ?? { mode: 'all' }, currentScope())
     $: usualPeriodSpending = activePeriod
         ? usualAmount(
               comparisonPeriods
@@ -339,7 +401,7 @@
             difference: usual == null ? null : category.totalAmount - usual,
         }
     })
-    $: confirmedRecurring = activeRecurring.filter(
+    $: confirmedRecurring = recurringRows.filter(
         (series) => series.reviewStatus === 'confirmed'
     )
     $: expectedRecurringTotal = confirmedRecurring.reduce(
@@ -399,7 +461,9 @@
     // Merged rows represent one effective recurring stream throughout the app,
     // not just in the inventory table.
     $: activeRecurring = recurringRows.filter(
-        (series) => series.reviewStatus !== 'denied'
+        (series) =>
+            series.reviewStatus !== 'denied' &&
+            (!series.endedAt || series.endedAt >= dateKey(startOfToday()))
     )
     $: recurringExpenses = activeRecurring.filter(
         (series) => series.direction === 'expense'
@@ -468,54 +532,42 @@
             .sort((a, b) => b.totalAmount - a.totalAmount)
             .slice(0, 5) ?? []
     $: eligibleAliases = aliases.filter((alias) => {
-        const categoryQuery =
-            aliasCategorySearch[alias.categoryId]?.trim().toLocaleLowerCase() ??
-            ''
         const value = alias.value.toLocaleLowerCase()
         return (
             (aliasCategoryFilter === 'all' ||
                 alias.categoryId === aliasCategoryFilter) &&
             (aliasFieldFilter === 'all' || alias.field === aliasFieldFilter) &&
-            (!search.trim() || value.includes(search.trim().toLocaleLowerCase())) &&
-            (!categoryQuery || value.includes(categoryQuery))
+            (!search.trim() ||
+                value.includes(search.trim().toLocaleLowerCase()))
         )
     })
-    $: hasAliasFilters = aliasCategoryFilter !== 'all' ||
-        aliasFieldFilter !== 'all' ||
-        aliasUsageFilter !== 'all' ||
-        Boolean(search.trim()) ||
-        Object.values(aliasCategorySearch).some((value) => Boolean(value.trim()))
     $: filteredAliases = eligibleAliases.filter((alias) => {
         const usage = rules?.aliasUsage?.[alias.id] ?? 0
-        return aliasUsageFilter === 'all' ||
+        return (
+            aliasUsageFilter === 'all' ||
             (aliasUsageFilter === 'used' ? usage > 0 : usage === 0)
-    })
-    $: aliasGroups = categories
-        .filter(
-            (category) =>
-                aliasCategoryFilter === 'all' ||
-                category.id === aliasCategoryFilter
         )
-        .map((category) => {
-            const categoryAliases = filteredAliases
-                .filter((alias) => alias.categoryId === category.id)
-                .sort((a, b) =>
-                    compareAliases(a, b, aliasSort, rules?.aliasUsage ?? {})
-                )
-            const visible = aliasCategoryExpanded[category.id]
-                ? categoryAliases
-                : categoryAliases.slice(0, 5)
-            return {
-                category,
-                aliases: visible,
-                total: categoryAliases.length,
-                hiddenCount: Math.max(
-                    0,
-                    categoryAliases.length - visible.length
-                ),
-            }
-        })
-        .filter((group) => group.total > 0 || !hasAliasFilters)
+    })
+    $: categoryNavItems = categories.filter((category) =>
+        category.name
+            .toLocaleLowerCase()
+            .includes(categoryNavSearch.trim().toLocaleLowerCase())
+    )
+    $: sortedFilteredAliases = [...filteredAliases].sort((a, b) =>
+        compareAliases(a, b, aliasSort, rules?.aliasUsage ?? {})
+    )
+    $: selectedAlias =
+        sortedFilteredAliases.find((alias) => alias.id === selectedAliasId) ??
+        sortedFilteredAliases[0] ??
+        null
+    $: selectedAliasMatches = selectedAlias
+        ? (rules?.statements ?? [])
+              .filter((item) =>
+                  item.matches.some((match) => match.id === selectedAlias.id)
+              )
+              .sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
+              .slice(0, 1)
+        : []
     $: aliasResultCount = filteredAliases.length
     $: statementTypes = [
         ...new Set(
@@ -585,7 +637,9 @@
         void (async () => {
             try {
                 const profiles = await api.getImportProfiles()
-                importProfiles = Object.entries(profiles).map(([name, mappings]) => ({ name, mappings }))
+                importProfiles = Object.entries(profiles).map(
+                    ([name, mappings]) => ({ name, mappings })
+                )
                 const state = await api.getLedgers()
                 ledgers = state.ledgers
                 unassignedFiles = state.unassignedFiles
@@ -595,7 +649,10 @@
                 }
                 if (selectedLedgerId) await refresh()
             } catch (cause) {
-                error = cause instanceof Error ? cause.message : 'Could not load statement ledgers.'
+                error =
+                    cause instanceof Error
+                        ? cause.message
+                        : 'Could not load statement ledgers.'
             } finally {
                 checkingLedgers = false
             }
@@ -641,9 +698,12 @@
                 })
             }
             dashboard = nextDashboard
+            await refreshComparison()
             rules = await api.getRules(selectedLedgerId.trim())
             recurring = await api.getRecurring(selectedLedgerId.trim())
-            recurringSettings = await api.getRecurringSettings(selectedLedgerId.trim())
+            recurringSettings = await api.getRecurringSettings(
+                selectedLedgerId.trim()
+            )
         } catch (cause) {
             error =
                 cause instanceof Error
@@ -673,6 +733,113 @@
         if (!/^\d{4}-\d{2}$/.test(monthKey)) return { mode: 'all' }
         const [selectedYear, selectedMonth] = monthKey.split('-').map(Number)
         return { mode: 'month', year: selectedYear, month: selectedMonth }
+    }
+
+    function comparisonScope(): FinanceScope | null {
+        if (mode === 'month' && /^\d{4}-\d{2}$/.test(comparisonMonthKey)) {
+            const [selectedYear, selectedMonth] = comparisonMonthKey
+                .split('-')
+                .map(Number)
+            return { mode: 'month', year: selectedYear, month: selectedMonth }
+        }
+        if (mode === 'year' && Number.isInteger(comparisonYear))
+            return { mode: 'year', year: comparisonYear }
+        if (
+            mode === 'range' &&
+            isDateKey(comparisonFromDate) &&
+            isDateKey(comparisonToDate) &&
+            comparisonFromDate <= comparisonToDate
+        )
+            return {
+                mode: 'range',
+                from: comparisonFromDate,
+                to: comparisonToDate,
+            }
+        return null
+    }
+
+    function previousComparisonScope() {
+        const current = currentScope()
+        if (current.mode === 'month') {
+            const choices = dashboard?.availablePeriods.months ?? []
+            const previous = choices.filter((key) => key < monthKey).at(-1)
+            const next = choices.find((key) => key > monthKey)
+            comparisonMonthKey = previous ?? next ?? monthKey
+        } else if (current.mode === 'year') {
+            const choices = dashboard?.availablePeriods.years ?? []
+            comparisonYear =
+                choices.filter((item) => item < year).at(-1) ??
+                choices.find((item) => item > year) ??
+                year - 1
+        } else if (current.mode === 'range') {
+            const from = dateValue(fromDate)
+            const to = dateValue(toDate)
+            const days =
+                Math.round((to.getTime() - from.getTime()) / 86400000) + 1
+            const comparedTo = new Date(from.getTime() - 86400000)
+            const comparedFrom = new Date(
+                comparedTo.getTime() - (days - 1) * 86400000
+            )
+            comparisonFromDate = dateKey(comparedFrom)
+            comparisonToDate = dateKey(comparedTo)
+        }
+    }
+
+    async function refreshComparison() {
+        const request = ++comparisonRequest
+        comparisonError = ''
+        comparisonDashboard = null
+        const scope = comparePeriods ? comparisonScope() : null
+        if (
+            !scope ||
+            sameScope(scope, currentScope()) ||
+            !selectedLedgerId.trim()
+        ) {
+            comparisonLoading = false
+            return
+        }
+        comparisonLoading = true
+        try {
+            const result = await loadDashboard(api, {
+                ledgerId: selectedLedgerId.trim(),
+                scope,
+                top: 5,
+            })
+            if (request === comparisonRequest) comparisonDashboard = result
+        } catch (cause) {
+            if (request === comparisonRequest)
+                comparisonError =
+                    cause instanceof Error
+                        ? cause.message
+                        : 'Could not load comparison period.'
+        } finally {
+            if (request === comparisonRequest) comparisonLoading = false
+        }
+    }
+
+    function sameScope(left: FinanceScope, right: FinanceScope) {
+        return (
+            left.mode === right.mode &&
+            JSON.stringify(left) === JSON.stringify(right)
+        )
+    }
+
+    function toggleComparison() {
+        comparePeriods = !comparePeriods
+        if (comparePeriods) previousComparisonScope()
+        void refreshComparison()
+    }
+
+    function dateKey(value: Date) {
+        return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+    }
+
+    function comparisonPercent(current: number, compared: number) {
+        return compared === 0
+            ? current === 0
+                ? '0%'
+                : 'New'
+            : `${(((current - compared) / Math.abs(compared)) * 100).toFixed(1)}%`
     }
 
     function statementInScope(value: string | undefined) {
@@ -801,6 +968,12 @@
               ? 'denied'
               : 'pending'
         const latest = latestMember(members)
+        const endedAt = members.every((series) => series.endedAt)
+            ? members
+                  .map((series) => series.endedAt!)
+                  .sort()
+                  .at(-1)
+            : undefined
         return {
             ...base,
             id,
@@ -813,17 +986,24 @@
                 members.length > 1
                     ? `${base.counterparty} + ${members.length - 1} more`
                     : base.counterparty,
-            category: members.every((series) => series.category === base.category)
+            category: members.every(
+                (series) => series.category === base.category
+            )
                 ? base.category
                 : undefined,
             anchor: latest.anchor,
             nextExpectedDate: latest.nextExpectedDate,
+            endedAt,
             expectedDateFrom: latest.expectedDateFrom,
             expectedDateTo: latest.expectedDateTo,
-            necessity: members.every((series) => series.category === base.category)
+            necessity: members.every(
+                (series) => series.category === base.category
+            )
                 ? base.necessity
                 : undefined,
-            control: members.every((series) => series.category === base.category)
+            control: members.every(
+                (series) => series.category === base.category
+            )
                 ? base.control
                 : undefined,
             occurrences: observationsAsOccurrences(members, observationIds),
@@ -873,7 +1053,7 @@
             const occurrences = component
                 .flatMap((series) => series.occurrences)
                 .sort((a, b) => a.date.localeCompare(b.date))
-            const clusters: typeof occurrences[] = []
+            const clusters: (typeof occurrences)[] = []
             for (const occurrence of occurrences) {
                 const cluster = clusters.at(-1)
                 const first = cluster?.[0]
@@ -899,18 +1079,30 @@
 
         return {
             typicalAmount: representativeMoney(
-                componentModels.reduce((total, model) => total + model.typicalAmount, 0)
+                componentModels.reduce(
+                    (total, model) => total + model.typicalAmount,
+                    0
+                )
             ),
             minimumAmount: representativeMoney(
-                componentModels.reduce((total, model) => total + model.minimumAmount, 0)
+                componentModels.reduce(
+                    (total, model) => total + model.minimumAmount,
+                    0
+                )
             ),
             maximumAmount: representativeMoney(
-                componentModels.reduce((total, model) => total + model.maximumAmount, 0)
+                componentModels.reduce(
+                    (total, model) => total + model.maximumAmount,
+                    0
+                )
             ),
         }
     }
 
-    function sameRecurringSchedule(left: RecurringSeries, right: RecurringSeries) {
+    function sameRecurringSchedule(
+        left: RecurringSeries,
+        right: RecurringSeries
+    ) {
         if (
             left.cadence !== right.cadence ||
             left.direction !== right.direction ||
@@ -946,36 +1138,54 @@
             2,
             Math.ceil(Math.min(leftDates.length, rightDates.length) * 0.5)
         )
-        return matches >= requiredMatches || adjacentRecurringSchedule(left, right)
+        return (
+            matches >= requiredMatches || adjacentRecurringSchedule(left, right)
+        )
     }
 
-    function adjacentRecurringSchedule(left: RecurringSeries, right: RecurringSeries) {
+    function adjacentRecurringSchedule(
+        left: RecurringSeries,
+        right: RecurringSeries
+    ) {
         const leftFirst = left.occurrences[0]
         const leftLast = left.occurrences.at(-1)
         const rightFirst = right.occurrences[0]
         const rightLast = right.occurrences.at(-1)
         if (!leftFirst || !leftLast || !rightFirst || !rightLast) return false
 
-        const [older, newer] = leftLast.date < rightFirst.date
-            ? [left, right]
-            : rightLast.date < leftFirst.date
-              ? [right, left]
-              : [undefined, undefined]
+        const [older, newer] =
+            leftLast.date < rightFirst.date
+                ? [left, right]
+                : rightLast.date < leftFirst.date
+                  ? [right, left]
+                  : [undefined, undefined]
         if (!older || !newer) return false
 
-        const olderLastDate = new Date(`${older.occurrences.at(-1)!.date}T00:00:00`)
+        const olderLastDate = new Date(
+            `${older.occurrences.at(-1)!.date}T00:00:00`
+        )
         const newerFirstDate = new Date(`${newer.occurrences[0].date}T00:00:00`)
-        const monthsApart = (newerFirstDate.getFullYear() - olderLastDate.getFullYear()) * 12 +
-            newerFirstDate.getMonth() - olderLastDate.getMonth()
-        const amountScale = Math.max(older.amountModel.typicalAmount, newer.amountModel.typicalAmount)
-        const amountDifference = Math.abs(older.amountModel.typicalAmount - newer.amountModel.typicalAmount)
-        return monthsApart === older.intervalMonths &&
+        const monthsApart =
+            (newerFirstDate.getFullYear() - olderLastDate.getFullYear()) * 12 +
+            newerFirstDate.getMonth() -
+            olderLastDate.getMonth()
+        const amountScale = Math.max(
+            older.amountModel.typicalAmount,
+            newer.amountModel.typicalAmount
+        )
+        const amountDifference = Math.abs(
+            older.amountModel.typicalAmount - newer.amountModel.typicalAmount
+        )
+        return (
+            monthsApart === older.intervalMonths &&
             amountDifference <= Math.max(1, amountScale * 0.05)
+        )
     }
 
     function latestMember(members: RecurringSeries[]) {
         return members.reduce((latest, member) =>
-            (member.occurrences.at(-1)?.date ?? '') > (latest.occurrences.at(-1)?.date ?? '')
+            (member.occurrences.at(-1)?.date ?? '') >
+            (latest.occurrences.at(-1)?.date ?? '')
                 ? member
                 : latest
         )
@@ -1043,33 +1253,27 @@
 
     function expectedRecurringForSeries(series: RecurringSeries) {
         if (mode === 'all') return 0
-        if (mode === 'month') {
-            if (series.cadence === 'monthly')
-                return series.amountModel.typicalAmount
-            const anchorMonth = series.occurrences[0]?.date.slice(5, 7)
-            return anchorMonth === monthKey.slice(5, 7)
-                ? series.amountModel.typicalAmount
-                : 0
-        }
-        if (mode === 'year')
-            return (
-                series.amountModel.typicalAmount * (12 / series.intervalMonths)
+        const window = scopeWindow()
+        const firstDate = series.occurrences.map((item) => item.date).sort()[0]
+        if (!window || !firstDate) return 0
+        let dueDate = dateValue(firstDate)
+        while (dueDate < window.from)
+            dueDate = addRecurringInterval(
+                dueDate,
+                series.intervalMonths,
+                series.anchor.endOfMonth
             )
-        if (!isDateKey(fromDate) || !isDateKey(toDate)) return 0
-        const from = new Date(`${fromDate}T00:00:00`)
-        const to = new Date(`${toDate}T00:00:00`)
-        const anchorMonth = series.occurrences[0]?.date.slice(5, 7)
         let count = 0
-        for (
-            const cursor = new Date(from.getFullYear(), from.getMonth(), 1);
-            cursor <= to;
-            cursor.setMonth(cursor.getMonth() + 1)
+        while (
+            dueDate <= window.to &&
+            (!series.endedAt || dateKey(dueDate) <= series.endedAt)
         ) {
-            if (
-                series.cadence === 'monthly' ||
-                String(cursor.getMonth() + 1).padStart(2, '0') === anchorMonth
+            count += 1
+            dueDate = addRecurringInterval(
+                dueDate,
+                series.intervalMonths,
+                series.anchor.endOfMonth
             )
-                count += 1
         }
         return count * series.amountModel.typicalAmount
     }
@@ -1106,7 +1310,11 @@
         return new Date(today.getFullYear(), today.getMonth(), today.getDate())
     }
 
-    function addRecurringInterval(value: Date, intervalMonths: 1 | 12) {
+    function addRecurringInterval(
+        value: Date,
+        intervalMonths: 1 | 12,
+        endOfMonth = false
+    ) {
         const target = new Date(
             value.getFullYear(),
             value.getMonth() + intervalMonths,
@@ -1120,7 +1328,7 @@
         return new Date(
             target.getFullYear(),
             target.getMonth(),
-            Math.min(value.getDate(), lastDay)
+            endOfMonth ? lastDay : Math.min(value.getDate(), lastDay)
         )
     }
 
@@ -1133,11 +1341,24 @@
             .flatMap((series) => {
                 const movements: { series: RecurringSeries; date: Date }[] = []
                 let next = dateValue(series.nextExpectedDate)
+                if (series.endedAt && series.endedAt < dateKey(start))
+                    return movements
                 while (next < start)
-                    next = addRecurringInterval(next, series.intervalMonths)
-                while (next <= window.to) {
+                    next = addRecurringInterval(
+                        next,
+                        series.intervalMonths,
+                        series.anchor.endOfMonth
+                    )
+                while (
+                    next <= window.to &&
+                    (!series.endedAt || dateKey(next) <= series.endedAt)
+                ) {
                     movements.push({ series, date: next })
-                    next = addRecurringInterval(next, series.intervalMonths)
+                    next = addRecurringInterval(
+                        next,
+                        series.intervalMonths,
+                        series.anchor.endOfMonth
+                    )
                 }
                 return movements
             })
@@ -1161,7 +1382,14 @@
             Math.round((window.to.getTime() - start.getTime()) / 86400000) + 1
         )
         const recurringCategories = new Set(
-            confirmedRecurring.map((series) => series.category).filter(Boolean)
+            confirmedRecurring
+                .filter(
+                    (series) =>
+                        !series.endedAt ||
+                        series.endedAt >= dateKey(startOfToday())
+                )
+                .map((series) => series.category)
+                .filter(Boolean)
         )
         const recentPeriods = monthlyPeriods.slice(-3)
         const recentFlexibleAverage =
@@ -1196,6 +1424,16 @@
         }).format(new Date(selectedYear, selectedMonth - 1, 1))
     }
 
+    function scopeLabelFor(scope: FinanceScope) {
+        if (scope.mode === 'month')
+            return monthLabel(
+                `${scope.year}-${String(scope.month).padStart(2, '0')}`
+            )
+        if (scope.mode === 'year') return String(scope.year)
+        if (scope.mode === 'range') return rangeLabel(scope.from, scope.to)
+        return 'All time'
+    }
+
     function rangeLabel(from: string, to: string) {
         if (!from || !to) return 'Choose a date range'
         return `${dateLabel(from)} – ${dateLabel(to)}`
@@ -1210,10 +1448,10 @@
         }).format(new Date(`${value}T00:00:00`))
     }
 
-    function aliasCreatedLabel(value?: string) {
-        if (!value) return 'Created date unavailable'
+    function aliasCreatedLabel(value?: string): string | null {
+        if (!value) return null
         const date = new Date(value)
-        if (Number.isNaN(date.getTime())) return 'Created date unavailable'
+        if (Number.isNaN(date.getTime())) return null
         return `Created ${new Intl.DateTimeFormat(undefined, {
             dateStyle: 'medium',
             timeStyle: 'short',
@@ -1257,6 +1495,8 @@
             fromDate = `${dashboard.availablePeriods.firstMonth}-01`
             toDate = `${dashboard.availablePeriods.lastMonth}-${new Date(Number(dashboard.availablePeriods.lastMonth.slice(0, 4)), Number(dashboard.availablePeriods.lastMonth.slice(5, 7)), 0).getDate()}`
         }
+        if (comparePeriods && nextMode !== 'all') previousComparisonScope()
+        else if (nextMode === 'all') comparePeriods = false
         refresh()
     }
 
@@ -1283,18 +1523,22 @@
     }
 
     function chooseMonth(event: Event) {
-        monthKey = (event.currentTarget as HTMLInputElement).value
+        monthKey = (event.currentTarget as HTMLSelectElement).value
+        if (comparePeriods) previousComparisonScope()
         refresh()
     }
 
     function chooseYear(event: Event) {
         year = Number((event.currentTarget as HTMLSelectElement).value)
+        if (comparePeriods) previousComparisonScope()
         refresh()
     }
 
     function chooseRange() {
-        if (isDateKey(fromDate) && isDateKey(toDate) && fromDate <= toDate)
+        if (isDateKey(fromDate) && isDateKey(toDate) && fromDate <= toDate) {
+            if (comparePeriods) previousComparisonScope()
             refresh()
+        }
     }
 
     function money(value: number | null | undefined) {
@@ -1372,50 +1616,101 @@
         if (!selectedFile) return
         void selectedFile.text().then((text) => {
             const first = text.replace(/^\uFEFF/, '').split(/\r?\n/, 1)[0] ?? ''
-            const delimiter = [';', ',', '\t'].sort((a, b) => first.split(b).length - first.split(a).length)[0]
+            const delimiter = [';', ',', '\t'].sort(
+                (a, b) => first.split(b).length - first.split(a).length
+            )[0]
             const cells: string[] = []
-            let cell = '', quoted = false
+            let cell = '',
+                quoted = false
             for (let i = 0; i < first.length; i++) {
                 if (first[i] === '"') {
-                    if (quoted && first[i + 1] === '"') { cell += '"'; i++ }
-                    else quoted = !quoted
-                } else if (!quoted && first[i] === delimiter) { cells.push(cell.trim()); cell = '' }
-                else cell += first[i]
+                    if (quoted && first[i + 1] === '"') {
+                        cell += '"'
+                        i++
+                    } else quoted = !quoted
+                } else if (!quoted && first[i] === delimiter) {
+                    cells.push(cell.trim())
+                    cell = ''
+                } else cell += first[i]
             }
             cells.push(cell.trim())
             importHeaders = cells
-            const known: Record<string, string> = { date: 'Buchungstag', date_executed: 'Wertstellung', transaction_type: 'Umsatzart', text: 'Buchungstext', amount: 'Betrag', currency: 'Währung', bank_number_owner: 'IBAN Kontoinhaber', category: 'Kategorie', sender: 'Sender', recipient: 'Empfänger', purpose: 'Verwendungszweck' }
-            for (const [field, header] of Object.entries(known)) if (cells.includes(header)) columnMappings[field] = header
-            const saved = importProfiles.find((profile) => profile.name === importProfile)
+            const known: Record<string, string> = {
+                date: 'Buchungstag',
+                date_executed: 'Wertstellung',
+                transaction_type: 'Umsatzart',
+                text: 'Buchungstext',
+                amount: 'Betrag',
+                currency: 'Währung',
+                bank_number_owner: 'IBAN Kontoinhaber',
+                category: 'Kategorie',
+                sender: 'Sender',
+                recipient: 'Empfänger',
+                purpose: 'Verwendungszweck',
+            }
+            for (const [field, header] of Object.entries(known))
+                if (cells.includes(header)) columnMappings[field] = header
+            const saved = importProfiles.find(
+                (profile) => profile.name === importProfile
+            )
             if (saved) columnMappings = { ...saved.mappings }
         })
     }
 
-    const importFields = [['date', 'Transaction date'], ['date_executed', 'Value date'], ['transaction_type', 'Transaction type'], ['text', 'Description'], ['amount', 'Amount'], ['currency', 'Currency'], ['bank_number_owner', 'Account owner'], ['category', 'Bank category'], ['sender', 'Sender'], ['recipient', 'Recipient'], ['purpose', 'Purpose']] as const
+    const importFields = [
+        ['date', 'Transaction date'],
+        ['date_executed', 'Value date'],
+        ['transaction_type', 'Transaction type'],
+        ['text', 'Description'],
+        ['amount', 'Amount'],
+        ['currency', 'Currency'],
+        ['bank_number_owner', 'Account owner'],
+        ['category', 'Bank category'],
+        ['sender', 'Sender'],
+        ['recipient', 'Recipient'],
+        ['purpose', 'Purpose'],
+    ] as const
 
     async function saveImportProfile() {
         if (!profileName.trim()) return
         try {
             await api.saveImportProfile(profileName.trim(), columnMappings)
             importProfile = profileName.trim()
-            importProfiles = [...importProfiles.filter((profile) => profile.name !== importProfile), { name: importProfile, mappings: { ...columnMappings } }]
+            importProfiles = [
+                ...importProfiles.filter(
+                    (profile) => profile.name !== importProfile
+                ),
+                { name: importProfile, mappings: { ...columnMappings } },
+            ]
             profileName = ''
-        } catch { error = 'Could not save the import profile.' }
+        } catch {
+            error = 'Could not save the import profile.'
+        }
     }
 
     async function selectLedger() {
         dashboard = null
         rules = null
         recurring = []
-        importProfile = ledgers.find((ledger) => ledger.id === selectedLedgerId)?.importProfile ?? ''
+        importProfile =
+            ledgers.find((ledger) => ledger.id === selectedLedgerId)
+                ?.importProfile ?? ''
         if (selectedLedgerId) await refresh()
     }
 
     async function createLedger() {
-        if (!newLedgerName.trim()) { error = 'Enter a name for this account ledger.'; return }
+        if (!newLedgerName.trim()) {
+            error = 'Enter a name for this account ledger.'
+            return
+        }
         saving = true
         try {
-            const created = await api.createLedger(newLedgerName.trim(), selectedLegacyFiles, importProfile || undefined, newLedgerRulesTemplate)
+            const created = await api.createLedger(
+                newLedgerName.trim(),
+                selectedLegacyFiles,
+                importProfile || undefined,
+                newLedgerRulesTemplate
+            )
             const state = await api.getLedgers()
             ledgers = state.ledgers
             unassignedFiles = state.unassignedFiles
@@ -1426,8 +1721,13 @@
             creatingLedger = false
             await refresh()
         } catch (cause) {
-            error = cause instanceof Error ? cause.message : 'Could not create the account ledger.'
-        } finally { saving = false }
+            error =
+                cause instanceof Error
+                    ? cause.message
+                    : 'Could not create the account ledger.'
+        } finally {
+            saving = false
+        }
     }
 
     async function applyGenericRulesTemplate() {
@@ -1437,8 +1737,13 @@
             await api.applyGenericRulesTemplate(selectedLedgerId)
             await refreshRules()
         } catch (cause) {
-            error = cause instanceof Error ? cause.message : 'Could not apply the generic category template.'
-        } finally { saving = false }
+            error =
+                cause instanceof Error
+                    ? cause.message
+                    : 'Could not apply the generic category template.'
+        } finally {
+            saving = false
+        }
     }
 
     function toggleLegacyFile(file: string, selected: boolean) {
@@ -1451,7 +1756,11 @@
         if (!selectedFile || !selectedLedgerId) return
         saving = true
         try {
-            await api.uploadStatement(selectedFile, columnMappings, selectedLedgerId)
+            await api.uploadStatement(
+                selectedFile,
+                columnMappings,
+                selectedLedgerId
+            )
             selectedFile = null
             importHeaders = []
             const state = await api.getLedgers()
@@ -1472,10 +1781,14 @@
         if (!newAlias.value.trim() || !newAlias.categoryId) return
         saving = true
         try {
-            await api.createAlias(selectedLedgerId, {
+            const created = (await api.createAlias(selectedLedgerId, {
                 ...newAlias,
                 transactionType: newAlias.transactionType || undefined,
-            })
+            })) as Alias
+            selectedAliasId = created.id
+            aliasCategoryFilter = created.categoryId
+            search = ''
+            showAliasCreateDialog = false
             newAlias = {
                 value: '',
                 categoryId: newAlias.categoryId,
@@ -1494,14 +1807,26 @@
     }
 
     async function addKeywordSuggestion(value: string) {
-        if (!newAlias.categoryId) { error = 'Create or select a category before adding a keyword.'; return }
+        if (!newAlias.categoryId) {
+            error = 'Create or select a category before adding a keyword.'
+            return
+        }
         saving = true
         try {
-            await api.createAlias(selectedLedgerId, { value, categoryId: newAlias.categoryId, field: 'any' })
+            await api.createAlias(selectedLedgerId, {
+                value,
+                categoryId: newAlias.categoryId,
+                field: 'any',
+            })
             await refreshRules()
         } catch (cause) {
-            error = cause instanceof Error ? cause.message : 'Could not add the suggested keyword.'
-        } finally { saving = false }
+            error =
+                cause instanceof Error
+                    ? cause.message
+                    : 'Could not add the suggested keyword.'
+        } finally {
+            saving = false
+        }
     }
 
     async function updateAlias(alias: Alias) {
@@ -1533,11 +1858,14 @@
         error = ''
         try {
             await api.deleteAlias(selectedLedgerId, id)
+            selectedAliasId = ''
+            editingAliasId = ''
             await refreshRules()
         } catch (cause) {
-            error = cause instanceof Error
-                ? cause.message
-                : 'Could not remove the alias.'
+            error =
+                cause instanceof Error
+                    ? cause.message
+                    : 'Could not remove the alias.'
         } finally {
             saving = false
         }
@@ -1617,9 +1945,10 @@
             quickAliasStatement = null
             await refreshRules()
         } catch (cause) {
-            error = cause instanceof Error
-                ? cause.message
-                : 'Could not create the alias.'
+            error =
+                cause instanceof Error
+                    ? cause.message
+                    : 'Could not create the alias.'
         } finally {
             saving = false
         }
@@ -1676,7 +2005,11 @@
         try {
             await Promise.all(
                 row.memberSeriesIds.map((seriesId) =>
-                    api.setRecurringDecision(selectedLedgerId, seriesId, decision)
+                    api.setRecurringDecision(
+                        selectedLedgerId,
+                        seriesId,
+                        decision
+                    )
                 )
             )
             recurring = await api.getRecurring(selectedLedgerId)
@@ -1776,6 +2109,33 @@
         recurringObservationLimit = 100
     }
 
+    function openRecurringEndDate(row: RecurringRow) {
+        recurringDialog = { kind: 'end-date', row }
+        recurringEndDateDraft = row.endedAt ?? dateKey(startOfToday())
+    }
+
+    async function saveRecurringEndDate(endedAt: string | null) {
+        if (!recurringDialog || recurringDialog.kind !== 'end-date') return
+        saving = true
+        try {
+            const { row } = recurringDialog
+            await Promise.all(
+                row.memberSeriesIds.map((seriesId) =>
+                    api.setRecurringEndDate(selectedLedgerId, seriesId, endedAt)
+                )
+            )
+            recurring = await api.getRecurring(selectedLedgerId)
+            closeRecurringDialog()
+        } catch (cause) {
+            error =
+                cause instanceof Error
+                    ? cause.message
+                    : 'Could not update the recurring end date.'
+        } finally {
+            saving = false
+        }
+    }
+
     function closeRecurringDialog() {
         recurringDialog = null
         recurringAliasScan = null
@@ -1789,7 +2149,11 @@
                 : statement.amount != null && statement.amount > 0
                   ? 'income'
                   : 'expense'
-            await api.setManualRecurring(selectedLedgerId, statement.id, direction)
+            await api.setManualRecurring(
+                selectedLedgerId,
+                statement.id,
+                direction
+            )
             await refreshRules()
         } catch (cause) {
             error =
@@ -1804,6 +2168,13 @@
     function openNewAlias(value = '') {
         newAlias = { ...newAlias, value }
         page = 'aliases'
+        openAliasCreate()
+    }
+
+    function openAliasCreate() {
+        if (aliasCategoryFilter !== 'all')
+            newAlias.categoryId = aliasCategoryFilter
+        showAliasCreateDialog = true
     }
 
     function navigate(nextPage: Page) {
@@ -1814,22 +2185,18 @@
         window.history.pushState({}, '', nextUrl)
     }
 
-    function setCategoryAliasSearch(categoryId: string, value: string) {
-        aliasCategorySearch = { ...aliasCategorySearch, [categoryId]: value }
-        aliasCategoryExpanded = {
-            ...aliasCategoryExpanded,
-            [categoryId]: false,
-        }
-    }
-
-    function loadMoreAliases(categoryId: string) {
-        aliasCategoryExpanded = { ...aliasCategoryExpanded, [categoryId]: true }
+    function selectAliasCategory(categoryId: string) {
+        aliasCategoryFilter = categoryId
+        selectedAliasId = ''
+        editingAliasId = ''
     }
 
     function goToAlias(aliasId: string) {
         const alias = aliases.find((item) => item.id === aliasId)
         if (!alias) return
         search = alias.value
+        aliasCategoryFilter = alias.categoryId
+        selectedAliasId = alias.id
         editingAliasId = alias.id
         page = 'aliases'
     }
@@ -1862,6 +2229,26 @@
         statementTypeFilter = 'all'
         statementLimit = 100
         navigate('statements')
+    }
+
+    function openStatementsForAlias(alias: Alias) {
+        statementSearch = alias.value
+        statementFilter = 'all'
+        statementTypeFilter = 'all'
+        statementLimit = 100
+        navigate('statements')
+    }
+
+    async function copyAliasValue(alias: Alias) {
+        try {
+            await navigator.clipboard.writeText(alias.value)
+            copiedAliasId = alias.id
+            window.setTimeout(() => {
+                if (copiedAliasId === alias.id) copiedAliasId = ''
+            }, 1500)
+        } catch {
+            error = 'Could not copy this alias to the clipboard.'
+        }
     }
 </script>
 
@@ -1898,17 +2285,32 @@
                 </p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
-                <label class="flex h-10 max-w-64 items-center gap-2 rounded-xl border border-white/80 bg-white/80 px-3 text-sm shadow-sm backdrop-blur">
+                <label
+                    class="flex h-10 max-w-64 items-center gap-2 rounded-xl border border-white/80 bg-white/80 px-3 text-sm shadow-sm backdrop-blur"
+                >
                     <FolderKanban size={16} class="text-slate-400" />
-                    <select bind:value={selectedLedgerId} onchange={selectLedger} class="min-w-0 bg-transparent outline-none" aria-label="Selected ledger">
+                    <select
+                        bind:value={selectedLedgerId}
+                        onchange={selectLedger}
+                        class="min-w-0 bg-transparent outline-none"
+                        aria-label="Selected ledger"
+                    >
                         <option value="">Select account ledger</option>
-                        {#each ledgers as ledger}<option value={ledger.id}>{ledger.name} · {ledger.sources.length} files</option>{/each}
+                        {#each ledgers as ledger}<option value={ledger.id}
+                                >{ledger.name} · {ledger.sources.length} files</option
+                            >{/each}
                     </select>
                 </label>
-                {#if selectedLedgerId}<Button size="sm" variant="outline" onclick={() => (creatingLedger = !creatingLedger)}><Plus size={15} />New ledger</Button>{/if}
+                {#if selectedLedgerId}<Button
+                        size="sm"
+                        variant="outline"
+                        onclick={() => (creatingLedger = !creatingLedger)}
+                        ><Plus size={15} />New ledger</Button
+                    >{/if}
                 <label
                     class="flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-dashed border-slate-300 px-3 text-xs font-semibold text-slate-600 hover:border-primary hover:bg-white"
-                    ><Upload size={15} />{selectedFile?.name ?? 'Upload CSV'}<input
+                    ><Upload size={15} />{selectedFile?.name ??
+                        'Upload CSV'}<input
                         id="statement-file-input"
                         type="file"
                         accept=".csv,text/csv"
@@ -1938,28 +2340,77 @@
         </header>
 
         {#if !checkingLedgers && (!selectedLedgerId || creatingLedger) && !selectedFile}
-            <Card className="mb-5 space-y-4 border-indigo-200 bg-indigo-50/70 p-6">
+            <Card
+                className="mb-5 space-y-4 border-indigo-200 bg-indigo-50/70 p-6"
+            >
                 <div>
-                    <h2 class="font-semibold text-slate-900">{ledgers.length ? 'Choose a ledger or create one' : 'Create an account ledger'}</h2>
-                    <p class="mt-1 text-sm text-slate-600">A ledger combines statements for one bank account. Choose which existing CSVs belong together, or create an empty ledger and upload into it.</p>
+                    <h2 class="font-semibold text-slate-900">
+                        {ledgers.length
+                            ? 'Choose a ledger or create one'
+                            : 'Create an account ledger'}
+                    </h2>
+                    <p class="mt-1 text-sm text-slate-600">
+                        A ledger combines statements for one bank account.
+                        Choose which existing CSVs belong together, or create an
+                        empty ledger and upload into it.
+                    </p>
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
-                    <input class="rounded-lg border bg-white p-2 text-sm" bind:value={newLedgerName} placeholder="Account or person name" aria-label="New ledger name" />
-                    <select class="rounded-lg border bg-white p-2 text-sm" bind:value={importProfile} aria-label="Import profile for this ledger">
+                    <input
+                        class="rounded-lg border bg-white p-2 text-sm"
+                        bind:value={newLedgerName}
+                        placeholder="Account or person name"
+                        aria-label="New ledger name"
+                    />
+                    <select
+                        class="rounded-lg border bg-white p-2 text-sm"
+                        bind:value={importProfile}
+                        aria-label="Import profile for this ledger"
+                    >
                         <option value="">Automatic headers / no profile</option>
-                        {#each importProfiles as profile}<option value={profile.name}>{profile.name}</option>{/each}
+                        {#each importProfiles as profile}<option
+                                value={profile.name}>{profile.name}</option
+                            >{/each}
                     </select>
-                    <select class="rounded-lg border bg-white p-2 text-sm" bind:value={newLedgerRulesTemplate} aria-label="Starting finance rules">
-                        <option value="generic">Generic starter categories</option>
+                    <select
+                        class="rounded-lg border bg-white p-2 text-sm"
+                        bind:value={newLedgerRulesTemplate}
+                        aria-label="Starting finance rules"
+                    >
+                        <option value="generic"
+                            >Generic starter categories</option
+                        >
                         <option value="scratch">Start from scratch</option>
                     </select>
-                    <Button onclick={createLedger} disabled={saving || !newLedgerName.trim()}><Plus size={15} />Create ledger</Button>
+                    <Button
+                        onclick={createLedger}
+                        disabled={saving || !newLedgerName.trim()}
+                        ><Plus size={15} />Create ledger</Button
+                    >
                 </div>
-                {#if ledgers.length}<p class="text-xs text-slate-500">Or choose an existing ledger from the selector above.</p>{/if}
+                {#if ledgers.length}<p class="text-xs text-slate-500">
+                        Or choose an existing ledger from the selector above.
+                    </p>{/if}
                 {#if unassignedFiles.length}
-                    <fieldset class="space-y-2 rounded-xl border border-indigo-100 bg-white p-4">
-                        <legend class="px-1 text-xs font-semibold text-slate-700">Existing CSV files to include in the new ledger</legend>
-                        {#each unassignedFiles as file}<label class="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={selectedLegacyFiles.includes(file)} onchange={(event) => toggleLegacyFile(file, event.currentTarget.checked)} />{file}</label>{/each}
+                    <fieldset
+                        class="space-y-2 rounded-xl border border-indigo-100 bg-white p-4"
+                    >
+                        <legend
+                            class="px-1 text-xs font-semibold text-slate-700"
+                            >Existing CSV files to include in the new ledger</legend
+                        >
+                        {#each unassignedFiles as file}<label
+                                class="flex items-center gap-2 text-sm text-slate-700"
+                                ><input
+                                    type="checkbox"
+                                    checked={selectedLegacyFiles.includes(file)}
+                                    onchange={(event) =>
+                                        toggleLegacyFile(
+                                            file,
+                                            event.currentTarget.checked
+                                        )}
+                                />{file}</label
+                            >{/each}
                     </fieldset>
                 {/if}
             </Card>
@@ -1967,15 +2418,58 @@
 
         {#if selectedFile}
             <Card className="mb-5 space-y-4">
-                <div><h2 class="font-semibold">Match CSV columns</h2><p class="mt-1 text-xs text-slate-500">Amount is needed for spending totals. Date enables timeframe views; other columns add detail.</p></div>
+                <div>
+                    <h2 class="font-semibold">Match CSV columns</h2>
+                    <p class="mt-1 text-xs text-slate-500">
+                        Amount is needed for spending totals. Date enables
+                        timeframe views; other columns add detail.
+                    </p>
+                </div>
                 <div class="flex flex-wrap items-end gap-2">
-                    <label class="text-xs">Saved mapping<select class="ml-2 rounded-lg border p-2" bind:value={importProfile} onchange={() => { const saved = importProfiles.find((profile) => profile.name === importProfile); if (saved) columnMappings = { ...saved.mappings } }}><option value="">Detected / manual</option>{#each importProfiles as savedProfile}<option value={savedProfile.name}>{savedProfile.name}</option>{/each}</select></label>
-                    <input class="rounded-lg border p-2 text-sm" bind:value={profileName} placeholder="Save mapping as profile" aria-label="Import profile name" />
-                    <Button size="sm" variant="outline" onclick={saveImportProfile}>Save mapping</Button>
+                    <label class="text-xs"
+                        >Saved mapping<select
+                            class="ml-2 rounded-lg border p-2"
+                            bind:value={importProfile}
+                            onchange={() => {
+                                const saved = importProfiles.find(
+                                    (profile) => profile.name === importProfile
+                                )
+                                if (saved)
+                                    columnMappings = { ...saved.mappings }
+                            }}
+                            ><option value="">Detected / manual</option
+                            >{#each importProfiles as savedProfile}<option
+                                    value={savedProfile.name}
+                                    >{savedProfile.name}</option
+                                >{/each}</select
+                        ></label
+                    >
+                    <input
+                        class="rounded-lg border p-2 text-sm"
+                        bind:value={profileName}
+                        placeholder="Save mapping as profile"
+                        aria-label="Import profile name"
+                    />
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        onclick={saveImportProfile}>Save mapping</Button
+                    >
                 </div>
                 <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     {#each importFields as [field, label]}
-                        <label class="text-xs font-medium text-slate-600">{label}{field === 'amount' ? ' · recommended' : ''}<select class="mt-1 block w-full rounded-lg border bg-white p-2 text-sm" bind:value={columnMappings[field]}><option value="">Not present</option>{#each importHeaders as header}<option value={header}>{header}</option>{/each}</select></label>
+                        <label class="text-xs font-medium text-slate-600"
+                            >{label}{field === 'amount'
+                                ? ' · recommended'
+                                : ''}<select
+                                class="mt-1 block w-full rounded-lg border bg-white p-2 text-sm"
+                                bind:value={columnMappings[field]}
+                                ><option value="">Not present</option
+                                >{#each importHeaders as header}<option
+                                        value={header}>{header}</option
+                                    >{/each}</select
+                            ></label
+                        >
                     {/each}
                 </div>
             </Card>
@@ -2045,107 +2539,11 @@
             >{/if}
 
         {#if !selectedLedgerId}
-            <p class="sr-only" role="status">Choose an account ledger to load the finance dashboard.</p>
+            <p class="sr-only" role="status">
+                Choose an account ledger to load the finance dashboard.
+            </p>
         {:else if page === 'dashboard'}
             <section class="space-y-5 animate-float-in">
-                {#if recurringRows.some((row) => row.reviewStatus !== 'denied')}
-                    <Card
-                        className="overflow-hidden border-emerald-100 bg-white p-0"
-                        ><div
-                            class="border-b border-emerald-100 bg-emerald-50/50 px-5 py-4"
-                        >
-                            <p class="label text-emerald-600">
-                                Auto-detected recurring
-                            </p>
-                            <h3
-                                class="mt-1 text-lg font-semibold text-slate-950"
-                            >
-                                Recurring series found in this ledger
-                            </h3>
-                            <p class="hint">
-                                These counts are the total non-denied
-                                observations found for each repeating payment or
-                                income.
-                            </p>
-                        </div>
-                        <div
-                            class="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3"
-                        >
-                            {#each recurringRows
-                                .filter((row) => row.reviewStatus !== 'denied')
-                                .slice(0, 6) as row}<button
-                                    class="recurring-context-row"
-                                    onclick={() => navigate('recurring')}
-                                    ><span class="min-w-0 text-left"
-                                        ><span
-                                            class="block truncate font-semibold text-slate-800"
-                                            >{row.label}</span
-                                        ><span
-                                            class="mt-1 block truncate text-xs text-slate-500"
-                                            >Auto-detected · {row.direction ===
-                                            'income'
-                                                ? 'income'
-                                                : 'payment'}</span
-                                        ></span
-                                    ><span class="shrink-0 text-right"
-                                        ><strong class="block text-emerald-700"
-                                            >{row.observationIds.length}</strong
-                                        ><span
-                                            class="text-[11px] text-slate-400"
-                                            >observations</span
-                                        ></span
-                                    ></button
-                                >{/each}
-                        </div>
-                        {#if recurringRows.filter((row) => row.reviewStatus !== 'denied').length > 6}<button
-                                class="load-more-link"
-                                onclick={() => navigate('recurring')}
-                                >Open all {recurringRows.filter(
-                                    (row) => row.reviewStatus !== 'denied'
-                                ).length} recurring series <ArrowUpRight
-                                    size={14}
-                                /></button
-                            >{/if}</Card
-                    >
-                {/if}
-                <div
-                    class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"
-                >
-                    <div>
-                        <Badge tone="success">Selected period</Badge>
-                        <h2 class="mt-2 page-title">
-                            What happened in {scopeLabel}
-                        </h2>
-                        <p class="page-subtitle">
-                            Start with a period, then compare what happened with
-                            what is usual.
-                        </p>
-                        {#if dashboard?.importSummary}
-                            <p class="mt-1 text-xs text-slate-500">
-                                Combined from {dashboard.importSummary.sourceCount} {dashboard.importSummary.sourceCount === 1 ? 'file' : 'files'}
-                                {#if dashboard.importSummary.duplicateTransactionsRemoved > 0}
-                                    · skipped {dashboard.importSummary.duplicateTransactionsRemoved} overlapping {dashboard.importSummary.duplicateTransactionsRemoved === 1 ? 'transaction' : 'transactions'}
-                                {/if}
-                            </p>
-                        {/if}
-                        {#if rules?.keywordSuggestions?.length}
-                            <div class="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
-                                <p class="text-xs font-semibold text-slate-700">Frequent words in expenses · review before adding a rule</p>
-                                <div class="mt-2 flex flex-wrap gap-2">
-                                    {#each rules.keywordSuggestions.slice(0, 12) as suggestion}
-                                        <button class="rounded-full border border-indigo-200 bg-white px-3 py-1.5 text-xs hover:border-primary" title={`Found in ${suggestion.count} of ${rules.stats.total} transactions`} onclick={() => addKeywordSuggestion(suggestion.value)} disabled={saving}>
-                                            {suggestion.value} · {suggestion.count} ({Math.round(suggestion.share * 100)}% of expenses)
-                                        </button>
-                                    {/each}
-                                </div>
-                                <label class="mt-3 block text-xs text-slate-600">Assign suggestions to<select class="ml-2 rounded-lg border bg-white p-1.5" bind:value={newAlias.categoryId}><option value="">Choose category</option>{#each categories as category}<option value={category.id}>{category.name}</option>{/each}</select></label>
-                            </div>
-                        {/if}
-                    </div>
-                    <span class="text-xs font-semibold text-slate-400"
-                        >{activeLedger?.name ?? selectedLedgerId}</span
-                    >
-                </div>
                 <Card
                     className="flex flex-col gap-4 border-indigo-100 bg-indigo-50/60 p-4 sm:flex-row sm:items-center sm:justify-between"
                     ><div>
@@ -2165,21 +2563,17 @@
                                     >{option[1]}</button
                                 >{/each}
                         </div>
-                        {#if mode === 'month'}<div class="relative">
-                                <button class="field min-w-44 text-left"
-                                    >{scopeLabel}</button
-                                ><input
-                                    type="month"
-                                    aria-label="Select month"
-                                    bind:value={monthKey}
-                                    min={dashboard?.availablePeriods.firstMonth}
-                                    max={dashboard?.availablePeriods.lastMonth}
-                                    onchange={chooseMonth}
-                                    class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                                />
-                            </div>{:else if mode === 'year'}<div
-                                class="relative"
-                            >
+                        {#if mode === 'month'}<select
+                                aria-label="Select month"
+                                bind:value={monthKey}
+                                onchange={chooseMonth}
+                                class="field min-w-44 cursor-pointer text-left"
+                                ><option value="" disabled>Select month</option
+                                >{#each dashboard?.availablePeriods.months ?? [] as availableMonth}<option
+                                        value={availableMonth}
+                                        >{monthLabel(availableMonth)}</option
+                                    >{/each}</select
+                            >{:else if mode === 'year'}<div class="relative">
                                 <button class="field min-w-28 text-left"
                                     >{year}</button
                                 ><select
@@ -2899,21 +3293,17 @@
                                     >{option[1]}</button
                                 >{/each}
                         </div>
-                        {#if mode === 'month'}<div class="relative">
-                                <button class="field min-w-44 text-left"
-                                    >{scopeLabel}</button
-                                ><input
-                                    type="month"
-                                    aria-label="Select month"
-                                    bind:value={monthKey}
-                                    min={dashboard?.availablePeriods.firstMonth}
-                                    max={dashboard?.availablePeriods.lastMonth}
-                                    onchange={chooseMonth}
-                                    class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                                />
-                            </div>{:else if mode === 'year'}<div
-                                class="relative"
-                            >
+                        {#if mode === 'month'}<select
+                                aria-label="Select month"
+                                bind:value={monthKey}
+                                onchange={chooseMonth}
+                                class="field min-w-44 cursor-pointer text-left"
+                                ><option value="" disabled>Select month</option
+                                >{#each dashboard?.availablePeriods.months ?? [] as availableMonth}<option
+                                        value={availableMonth}
+                                        >{monthLabel(availableMonth)}</option
+                                    >{/each}</select
+                            >{:else if mode === 'year'}<div class="relative">
                                 <button class="field min-w-28 text-left"
                                     >{year}</button
                                 ><select
@@ -2948,6 +3338,189 @@
                             </div>{/if}
                     </div></Card
                 >
+                <Card
+                    className="flex flex-wrap items-center justify-between gap-3 p-4"
+                >
+                    <div>
+                        <p class="font-semibold text-slate-900">
+                            Compare periods
+                        </p>
+                        <p class="hint">
+                            Compare this period with another period of the same
+                            type.
+                        </p>
+                    </div>
+                    <button
+                        class:active-mode={comparePeriods}
+                        class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        aria-pressed={comparePeriods}
+                        disabled={mode === 'all'}
+                        onclick={toggleComparison}
+                        >{comparePeriods ? 'Comparison on' : 'Compare'}</button
+                    >
+                    {#if comparePeriods}
+                        <div
+                            class="flex w-full flex-wrap items-center gap-2 border-t border-slate-100 pt-3"
+                        >
+                            <span class="text-sm text-slate-600"
+                                >Selected period vs</span
+                            >
+                            {#if mode === 'month'}
+                                <select
+                                    aria-label="Comparison month"
+                                    class="field"
+                                    bind:value={comparisonMonthKey}
+                                    onchange={() => refreshComparison()}
+                                >
+                                    {#if (dashboard?.availablePeriods.months ?? []).filter((item) => item !== monthKey).length === 0}<option
+                                            value={comparisonMonthKey}
+                                            disabled
+                                            >No other month available</option
+                                        >{/if}
+                                    {#each dashboard?.availablePeriods.months ?? [] as availableMonth}
+                                        {#if availableMonth !== monthKey}<option
+                                                value={availableMonth}
+                                                >{monthLabel(
+                                                    availableMonth
+                                                )}</option
+                                            >{/if}
+                                    {/each}
+                                </select>
+                            {:else if mode === 'year'}
+                                <select
+                                    aria-label="Comparison year"
+                                    class="field"
+                                    bind:value={comparisonYear}
+                                    onchange={() => refreshComparison()}
+                                >
+                                    {#if (dashboard?.availablePeriods.years ?? []).filter((item) => item !== year).length === 0}<option
+                                            value={comparisonYear}
+                                            disabled
+                                            >No other year available</option
+                                        >{/if}
+                                    {#each dashboard?.availablePeriods.years ?? [] as availableYear}
+                                        {#if availableYear !== year}<option
+                                                value={availableYear}
+                                                >{availableYear}</option
+                                            >{/if}
+                                    {/each}
+                                </select>
+                            {:else if mode === 'range'}
+                                <input
+                                    type="date"
+                                    aria-label="Comparison range start"
+                                    class="field"
+                                    bind:value={comparisonFromDate}
+                                    onchange={() => refreshComparison()}
+                                />
+                                <span class="text-xs text-slate-500">to</span>
+                                <input
+                                    type="date"
+                                    aria-label="Comparison range end"
+                                    class="field"
+                                    bind:value={comparisonToDate}
+                                    onchange={() => refreshComparison()}
+                                />
+                            {/if}
+                        </div>
+                    {/if}
+                </Card>
+                {#if comparePeriods}
+                    <Card className="overflow-hidden p-0">
+                        <div
+                            class="grid gap-3 border-b border-slate-100 p-5 md:grid-cols-3"
+                        >
+                            {#each comparisonMetrics as metric}
+                                <div class="rounded-xl bg-slate-50 p-4">
+                                    <p class="label">{metric.label}</p>
+                                    <p
+                                        class="mt-2 text-lg font-semibold text-slate-900"
+                                    >
+                                        {money(metric.current)}
+                                        <span
+                                            class="text-sm font-normal text-slate-400"
+                                            >vs</span
+                                        >
+                                        {money(metric.compared)}
+                                    </p>
+                                    <p class="hint">
+                                        Change: {metric.current != null &&
+                                        metric.compared != null
+                                            ? `${money(metric.current - metric.compared)} (${comparisonPercent(metric.current, metric.compared)})`
+                                            : comparisonLoading
+                                              ? 'Loading…'
+                                              : '—'}
+                                    </p>
+                                </div>
+                            {/each}
+                            <p class="text-xs text-slate-500 md:col-span-3">
+                                Selected: {scopeLabel} · Compared: {comparisonDashboard
+                                    ? scopeLabelFor(comparisonDashboard.scope)
+                                    : '—'}{mode === 'range'
+                                    ? ' · Range totals are not adjusted for duration.'
+                                    : ''}
+                            </p>
+                        </div>
+                        {#if comparisonUnavailable}<p
+                                class="p-5 text-sm text-slate-500"
+                            >
+                                Choose a different period to compare. This
+                                ledger may not contain another period of this
+                                type yet.
+                            </p>
+                        {:else if comparisonError}<p
+                                class="p-5 text-sm text-rose-700"
+                            >
+                                {comparisonError}
+                            </p>
+                        {:else if comparisonLoading}<p
+                                class="p-5 text-sm text-slate-500"
+                            >
+                                Loading comparison…
+                            </p>
+                        {:else if comparisonDashboard}
+                            <div class="overflow-x-auto">
+                                <table
+                                    class="w-full min-w-[600px] text-left text-sm"
+                                >
+                                    <thead
+                                        class="bg-slate-50 text-xs uppercase tracking-wider text-slate-400"
+                                        ><tr
+                                            ><th class="px-5 py-3">Category</th
+                                            ><th class="px-5 py-3">Selected</th
+                                            ><th class="px-5 py-3">Compared</th
+                                            ><th class="px-5 py-3">Change</th
+                                            ></tr
+                                        ></thead
+                                    ><tbody class="divide-y divide-slate-100"
+                                        >{#each comparedCategories as item}<tr
+                                                ><td
+                                                    class="px-5 py-3 font-medium"
+                                                    >{item.category}</td
+                                                ><td class="px-5 py-3"
+                                                    >{money(item.current)}</td
+                                                ><td class="px-5 py-3"
+                                                    >{money(item.compared)}</td
+                                                ><td class="px-5 py-3"
+                                                    >{money(item.difference)} · {comparisonPercent(
+                                                        item.current,
+                                                        item.compared
+                                                    )}</td
+                                                ></tr
+                                            >{:else}<tr
+                                                ><td
+                                                    colspan="4"
+                                                    class="px-5 py-6 text-center text-slate-500"
+                                                    >No category spending in
+                                                    these periods.</td
+                                                ></tr
+                                            >{/each}</tbody
+                                    >
+                                </table>
+                            </div>
+                        {/if}
+                    </Card>
+                {/if}
                 <Card
                     className="flex flex-col gap-3 border-indigo-100 bg-indigo-50/60 p-4 sm:flex-row sm:items-center sm:justify-between"
                     ><div>
@@ -3543,7 +4116,14 @@
                                             <p
                                                 class="mt-1 text-xs text-slate-400"
                                             >
-                                                {item.confidence}
+                                                {item.confidence}{#if item.endedAt}
+                                                    · {item.endedAt <=
+                                                    dateKey(startOfToday())
+                                                        ? 'Ended'
+                                                        : 'Ends'}
+                                                    {dateLabel(
+                                                        item.endedAt
+                                                    )}{/if}
                                             </p></td
                                         ><td class="px-5 py-4"
                                             ><div
@@ -3569,6 +4149,23 @@
                                                     ><Pencil
                                                         size={15}
                                                     /></button
+                                                >{#if item.reviewStatus === 'confirmed'}<button
+                                                        class="icon-button"
+                                                        title={item.endedAt
+                                                            ? 'Edit recurring end date'
+                                                            : 'Mark recurring payment as ended'}
+                                                        aria-label={item.endedAt
+                                                            ? `Edit end date for ${item.label}`
+                                                            : `Mark ${item.label} as ended`}
+                                                        onclick={() =>
+                                                            openRecurringEndDate(
+                                                                item
+                                                            )}
+                                                        disabled={saving}
+                                                        ><CalendarClock
+                                                            size={15}
+                                                        /></button
+                                                    >{/if}
                                                 >{#if item.members.length > 1}<button
                                                         class="icon-button danger-hover"
                                                         title="Split merged recurring payment"
@@ -3623,49 +4220,32 @@
                 </Card>
             </section>
         {:else if page === 'aliases'}
-            <section class="alias-page space-y-5 animate-float-in">
-                <div
-                    class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"
-                >
-                    <div>
-                        <Badge tone="success">Rules · {aliases.length}</Badge>
-                        <h2 class="mt-2 page-title">
-                            Aliases that do the sorting.
-                        </h2>
-                        <p class="page-subtitle">
-                            An alias is a literal “contains” match. For example,
-                            add <strong>Rewe</strong> and <strong>Edeka</strong> as
-                            Description aliases assigned to Groceries; future matching
-                            statements will be classified automatically.
-                        </p>
-                    </div>
-                    <div class="relative">
-                        <Search
-                            size={16}
-                            class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                        /><input
-                            bind:value={search}
-                            class="h-10 w-56 rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-primary"
-                            placeholder="Search aliases"
-                        />
-                    </div>
-                </div>
-                <Card className="p-4"
-                    ><div
-                        class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between"
-                    >
-                        <div class="flex flex-wrap items-center gap-2">
-                            <span
-                                class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400"
-                                ><Filter size={14} />Filter</span
-                            >{#each [['all', 'All aliases'], ['used', 'Used'], ['unused', 'Unused']] as filter}<button
+            <section class="space-y-4 animate-float-in">
+                <Card className="p-3">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <div class="relative min-w-56 flex-1">
+                            <Search
+                                size={15}
+                                class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                            />
+                            <input
+                                bind:value={search}
+                                class="field w-full pl-9"
+                                placeholder="Search aliases"
+                                aria-label="Search aliases"
+                            />
+                        </div>
+                        <div class="flex items-center gap-1">
+                            {#each [['all', 'All'], ['used', 'Used'], ['unused', 'Unused']] as filter}
+                                <button
                                     class:active-filter={aliasUsageFilter ===
                                         filter[0]}
                                     class="filter-chip"
                                     onclick={() =>
                                         (aliasUsageFilter =
                                             filter[0] as AliasUsageFilter)}
-                                    >{filter[1]}
+                                >
+                                    {filter[1]}
                                     <span
                                         >{filter[0] === 'all'
                                             ? eligibleAliases.length
@@ -3682,376 +4262,507 @@
                                                             alias.id
                                                         ] ?? 0) === 0
                                                 ).length}</span
-                                    ></button
-                                >{/each}
+                                    >
+                                </button>
+                            {/each}
                         </div>
-                        <div class="flex flex-col gap-2 sm:flex-row">
-                            <select
-                                bind:value={aliasCategoryFilter}
-                                class="field sm:w-48"
-                                aria-label="Filter aliases by category"
-                                ><option value="all">All categories</option
-                                >{#each categories as category}<option
-                                        value={category.id}
-                                        >{category.name}</option
-                                    >{/each}</select
-                            ><select
-                                bind:value={aliasFieldFilter}
-                                class="field sm:w-48"
-                                aria-label="Filter aliases by matched field"
-                                ><option value="all">All matched fields</option
-                                ><option value="any">Any statement field</option
-                                ><option value="text">Description only</option
-                                ><option value="transaction_type"
-                                    >Transaction type</option
-                                ><option value="category"
-                                    >Source category</option
-                                ></select
-                            ><label class="flex items-center gap-2"
-                                ><ArrowDownUp
-                                    size={15}
-                                    class="text-slate-400"
-                                /><select
-                                    bind:value={aliasSort}
-                                    class="field sm:w-48"
-                                    aria-label="Sort aliases"
-                                    ><option value="usage-desc"
-                                        >Most statements matched</option
-                                    ><option value="usage-asc"
-                                        >Fewest statements matched</option
-                                    ><option value="name-asc"
-                                        >Alias name A–Z</option
-                                    ><option value="name-desc"
-                                        >Alias name Z–A</option
-                                    ></select
-                                ></label
-                            >
-                        </div>
-                    </div>
-                    <div
-                        class="mt-3 flex items-center justify-between text-xs text-slate-500"
-                    >
-                        <span
-                            >Showing {aliasResultCount} of {eligibleAliases.length} matching aliases</span
-                        ><span
-                            >{aliasSort === 'usage-desc'
-                                ? 'High-impact rules first'
-                                : aliasSort === 'usage-asc'
-                                  ? 'Rules needing attention first'
-                                  : 'Sorted alphabetically'}</span
+                        <select
+                            bind:value={aliasFieldFilter}
+                            class="field"
+                            aria-label="Filter aliases by matched field"
                         >
-                    </div></Card
-                >
-                <Card className="border-indigo-100 bg-indigo-50/60 p-5"
-                    ><div class="mb-4 flex items-center gap-2">
-                        <Plus size={17} class="text-primary" />
-                        <h3 class="font-semibold text-slate-950">
-                            Add an alias
-                        </h3>
-                    </div>
-                    <div
-                        class="grid gap-3 md:grid-cols-[1.5fr_1fr_0.9fr_1fr_auto]"
-                    >
-                        <input
-                            bind:value={newAlias.value}
-                            class="field"
-                            placeholder="e.g. Rewe, Edeka, salary"
-                            aria-label="Alias text"
-                        /><select
-                            bind:value={newAlias.categoryId}
-                            class="field"
-                            aria-label="Alias category"
-                            >{#each categories as category}<option
-                                    value={category.id}>{category.name}</option
-                                >{/each}</select
-                        ><select
-                            bind:value={newAlias.field}
-                            class="field"
-                            aria-label="Alias field"
-                            ><option value="any">Any statement field</option
+                            <option value="all">All fields</option><option
+                                value="any">Any statement field</option
                             ><option value="text">Description only</option
                             ><option value="transaction_type"
                                 >Transaction type</option
-                            ><option value="category">Source category</option
-                            ></select
-                        ><input
-                            bind:value={newAlias.transactionType}
+                            ><option value="category">Source category</option>
+                        </select>
+                        <select
+                            bind:value={aliasSort}
                             class="field"
-                            placeholder="Optional type filter"
-                            aria-label="Transaction type filter"
-                        /><Button
-                            onclick={addAlias}
-                            disabled={saving || !newAlias.value.trim()}
-                            ><Plus size={15} />Add</Button
+                            aria-label="Sort aliases"
+                        >
+                            <option value="usage-desc">Most matches</option
+                            ><option value="usage-asc">Fewest matches</option
+                            ><option value="name-asc">Alias name A–Z</option
+                            ><option value="name-desc">Alias name Z–A</option>
+                        </select>
+                        <Button onclick={openAliasCreate}
+                            ><Plus size={15} />Create alias</Button
                         >
                     </div>
-                    <p class="mt-3 text-xs text-slate-500">
-                        Matching is case-insensitive and future uploads use the
-                        same rules. If two aliases overlap, Review will flag the
-                        statement.
-                    </p></Card
+                    <p class="mt-2 text-xs text-slate-500">
+                        {aliasResultCount} aliases · Matching is case-insensitive;
+                        overlapping rules appear in Review.
+                    </p>
+                </Card>
+
+                <div
+                    class="grid gap-4 xl:h-[calc(100dvh-22rem)] xl:min-h-[320px] xl:grid-cols-[220px_minmax(320px,1fr)_minmax(320px,0.9fr)]"
                 >
-                <div class="alias-group-grid grid gap-4 lg:grid-cols-2">
-                    {#each aliasGroups as group}
-                        <Card className="alias-group-card overflow-hidden p-0">
-                            <div
-                                class="border-b border-slate-100 bg-white/80 px-4 py-4"
-                            >
-                                <div
-                                    class="flex items-start justify-between gap-3"
-                                >
-                                    <div class="min-w-0">
-                                        <p class="label">
-                                            {group.category.necessity ===
-                                            'necessity'
-                                                ? 'Essential'
-                                                : 'Flexible'}
-                                        </p>
-                                        <h3
-                                            class="mt-1 truncate text-lg font-semibold text-slate-950"
-                                        >
-                                            {group.category.name}
-                                        </h3>
-                                        <p class="mt-1 text-xs text-slate-500">
-                                            {group.total} alias{group.total ===
-                                            1
-                                                ? ''
-                                                : 'es'} · variants of this category
-                                        </p>
-                                    </div>
-                                    <span class="count-pill">{group.total}</span
-                                    >
-                                </div>
-                                <div class="relative mt-3">
-                                    <Search
-                                        size={14}
-                                        class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                                    /><input
-                                        value={aliasCategorySearch[
-                                            group.category.id
-                                        ] ?? ''}
-                                        oninput={(event) =>
-                                            setCategoryAliasSearch(
-                                                group.category.id,
-                                                (
-                                                    event.currentTarget as HTMLInputElement
-                                                ).value
-                                            )}
-                                        class="field w-full pl-9"
-                                        placeholder={`Search ${group.category.name}`}
-                                        aria-label={`Search ${group.category.name} aliases`}
-                                    />
-                                </div>
+                    <Card className="min-h-0 overflow-hidden p-0">
+                        <div class="border-b border-slate-100 p-4">
+                            <h3 class="font-semibold text-slate-900">
+                                Categories
+                            </h3>
+                            <div class="relative mt-3">
+                                <Search
+                                    size={14}
+                                    class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                                />
+                                <input
+                                    bind:value={categoryNavSearch}
+                                    class="field w-full pl-9"
+                                    placeholder="Search categories"
+                                    aria-label="Search categories"
+                                />
                             </div>
-                            <div class="space-y-2 p-3">
-                                {#each group.aliases as alias}
-                                    <div
-                                        id={`alias-${alias.id}`}
-                                        class="alias-chip-row"
+                        </div>
+                        <nav
+                            class="max-h-[calc(100%-5.5rem)] space-y-1 overflow-y-auto p-2"
+                            aria-label="Alias categories"
+                        >
+                            <div
+                                class={`flex items-center rounded-lg pr-2 text-sm text-slate-700 hover:bg-slate-50 ${aliasCategoryFilter === 'all' ? 'active-mode' : ''}`}
+                            >
+                                <button
+                                    class="flex min-w-0 flex-1 items-center justify-between px-3 py-2.5 text-left"
+                                    onclick={() => selectAliasCategory('all')}
+                                    aria-current={aliasCategoryFilter === 'all'
+                                        ? 'true'
+                                        : undefined}
+                                >
+                                    <span class="truncate font-medium"
+                                        >All categories</span
+                                    ><span class="count-pill ml-2"
+                                        >{aliases.length}</span
                                     >
+                                </button>
+                                <button
+                                    class="rounded p-1 text-slate-500 hover:bg-slate-200/60"
+                                    onclick={() =>
+                                        (categoriesExpanded =
+                                            !categoriesExpanded)}
+                                    aria-label={categoriesExpanded
+                                        ? 'Collapse categories'
+                                        : 'Expand categories'}
+                                    aria-expanded={categoriesExpanded}
+                                >
+                                    {#if categoriesExpanded}<ChevronDown
+                                            size={15}
+                                        />{:else}<ChevronRight size={15} />{/if}
+                                </button>
+                            </div>
+                            {#if categoriesExpanded}
+                                <div
+                                    class="ml-3 border-l border-slate-200 pl-2"
+                                >
+                                    {#each categoryNavItems as category}
+                                        {@const count = aliases.filter(
+                                            (alias) =>
+                                                alias.categoryId === category.id
+                                        ).length}
                                         <button
-                                            class="alias-chip"
-                                            title="Edit alias"
+                                            class:active-mode={aliasCategoryFilter ===
+                                                category.id}
+                                            class="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50"
                                             onclick={() =>
-                                                (editingAliasId =
-                                                    editingAliasId === alias.id
-                                                        ? ''
-                                                        : alias.id)}
-                                            ><span
-                                                class="min-w-0 truncate font-semibold"
-                                                >“{alias.value}”</span
-                                            ><span class="alias-chip-meta flex flex-col items-end"
-                                                ><span>{rules?.aliasUsage?.[
-                                                    alias.id
-                                                ] ?? 0} matches</span><span>{aliasCreatedLabel(alias.createdAt)}</span></span
-                                            ></button
+                                                selectAliasCategory(
+                                                    category.id
+                                                )}
                                         >
-                                        <button
-                                            class="icon-button"
-                                            title="Edit alias"
-                                            aria-label="Edit alias"
-                                            onclick={() =>
-                                                (editingAliasId =
-                                                    editingAliasId === alias.id
-                                                        ? ''
-                                                        : alias.id)}
-                                            ><Pencil size={14} /></button
-                                        ><button
-                                            class="icon-button danger-hover"
-                                            title="Remove alias"
-                                            aria-label="Remove alias"
-                                            onclick={() =>
-                                                removeAlias(alias.id)}
-                                            ><Trash2 size={14} /></button
-                                        >
-                                    </div>
-                                    {#if editingAliasId === alias.id}<div
-                                            class="alias-edit-panel"
-                                        >
-                                            <input
-                                                bind:value={alias.value}
-                                                class="field"
-                                                aria-label="Edit alias text"
-                                            /><select
-                                                bind:value={alias.categoryId}
-                                                class="field"
-                                                aria-label="Edit alias category"
-                                                >{#each categories as category}<option
-                                                        value={category.id}
-                                                        >{category.name}</option
-                                                    >{/each}</select
-                                            ><select
-                                                bind:value={alias.field}
-                                                class="field"
-                                                aria-label="Edit alias field"
-                                                ><option value="any"
-                                                    >Any statement field</option
-                                                ><option value="text"
-                                                    >Description only</option
-                                                ><option
-                                                    value="transaction_type"
-                                                    >Transaction type</option
-                                                ><option value="category"
-                                                    >Source category</option
-                                                ></select
-                                            ><input
-                                                bind:value={
-                                                    alias.transactionType
-                                                }
-                                                class="field"
-                                                placeholder="Type filter"
-                                                aria-label="Edit type filter"
-                                            /><Button
-                                                size="sm"
-                                                onclick={() =>
-                                                    updateAlias(alias)}
-                                                ><Check size={14} />Save</Button
+                                            <span class="min-w-0 truncate"
+                                                >{category.name}</span
+                                            ><span class="count-pill ml-2"
+                                                >{count}</span
                                             >
-                                        </div>{/if}
-                                {:else}<p
-                                        class="px-2 py-3 text-sm text-slate-500"
+                                        </button>
+                                    {:else}
+                                        <p
+                                            class="px-3 py-5 text-center text-xs text-slate-500"
+                                        >
+                                            No categories found.
+                                        </p>
+                                    {/each}
+                                </div>
+                            {/if}
+                        </nav>
+                    </Card>
+
+                    <Card className="flex min-h-0 flex-col overflow-hidden p-0">
+                        <div class="border-b border-slate-100 px-4 py-4">
+                            <div class="flex items-start justify-between gap-2">
+                                <div class="min-w-0">
+                                    <h3
+                                        class="truncate text-lg font-semibold text-slate-900"
                                     >
-                                        No aliases match this search.
-                                    </p>{/each}
-                                {#if group.hiddenCount > 0}<button
-                                        class="load-more-link"
-                                        onclick={() =>
-                                            loadMoreAliases(group.category.id)}
-                                        >Show {group.hiddenCount} more <ChevronDown
-                                            size={14}
-                                        /></button
+                                        {aliasCategoryFilter === 'all'
+                                            ? 'All aliases'
+                                            : (categories.find(
+                                                  (category) =>
+                                                      category.id ===
+                                                      aliasCategoryFilter
+                                              )?.name ?? 'Aliases')}
+                                    </h3>
+                                    <p class="mt-1 text-xs text-slate-500">
+                                        {aliasResultCount} matching rule{aliasResultCount ===
+                                        1
+                                            ? ''
+                                            : 's'}
+                                    </p>
+                                </div>
+                                {#if aliasSort === 'usage-desc'}<Badge
+                                        >Most matches</Badge
                                     >{/if}
                             </div>
-                        </Card>
-                    {:else}<Card className="p-8 text-center lg:col-span-2"
-                            ><Search size={22} class="mx-auto text-slate-300" />
-                            <p class="mt-3 font-semibold text-slate-700">
-                                No aliases found
-                            </p>
-                            <p class="mt-1 text-sm text-slate-400">
-                                Try a different category or alias search.
-                            </p></Card
-                        >{/each}
+                        </div>
+                        <div
+                            class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2"
+                        >
+                            {#each sortedFilteredAliases as alias}
+                                {@const usage =
+                                    rules?.aliasUsage?.[alias.id] ?? 0}
+                                {@const category = categories.find(
+                                    (item) => item.id === alias.categoryId
+                                )}
+                                <button
+                                    class={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition ${selectedAlias?.id === alias.id ? 'border-indigo-200 bg-indigo-50/70' : 'border-transparent hover:border-slate-100 hover:bg-slate-50'}`}
+                                    onclick={() => {
+                                        selectedAliasId = alias.id
+                                        editingAliasId = ''
+                                    }}
+                                >
+                                    <span class="min-w-0 flex-1"
+                                        ><span
+                                            class="block truncate font-semibold text-slate-800"
+                                            >{alias.value}</span
+                                        ><span
+                                            class="mt-1 block truncate text-xs text-slate-500"
+                                            >{aliasCategoryFilter === 'all'
+                                                ? (category?.name ??
+                                                  'Uncategorized')
+                                                : alias.field === 'text'
+                                                  ? 'Description'
+                                                  : alias.field ===
+                                                      'transaction_type'
+                                                    ? 'Transaction type'
+                                                    : alias.field === 'category'
+                                                      ? 'Source category'
+                                                      : 'Any field'}</span
+                                        ></span
+                                    >
+                                    <span
+                                        class="shrink-0 text-xs font-semibold text-slate-500"
+                                        >{usage} matches</span
+                                    >
+                                </button>
+                            {:else}
+                                <div class="p-8 text-center">
+                                    <Search
+                                        size={20}
+                                        class="mx-auto text-slate-300"
+                                    />
+                                    <p
+                                        class="mt-2 text-sm font-semibold text-slate-700"
+                                    >
+                                        No aliases found
+                                    </p>
+                                    <p class="mt-1 text-xs text-slate-500">
+                                        Try another search or filter.
+                                    </p>
+                                </div>
+                            {/each}
+                        </div>
+                    </Card>
+
+                    <Card className="flex min-h-0 flex-col overflow-hidden p-0">
+                        {#if selectedAlias}
+                            {@const selectedCategory = categories.find(
+                                (item) => item.id === selectedAlias.categoryId
+                            )}
+                            <div
+                                class="shrink-0 border-b border-slate-100 px-4 py-4"
+                            >
+                                <div class="min-w-0">
+                                    <p class="label">Alias details</p>
+                                    <h3
+                                        class="mt-1 truncate text-xl font-bold tracking-tight text-slate-950"
+                                    >
+                                        {selectedAlias.value}
+                                    </h3>
+                                </div>
+                            </div>
+                            {#if editingAliasId === selectedAlias.id}
+                                <div
+                                    class="min-h-0 flex-1 space-y-3 overflow-y-auto p-4"
+                                >
+                                    <label
+                                        class="block text-sm font-medium text-slate-700"
+                                        >Match phrase<input
+                                            bind:value={selectedAlias.value}
+                                            class="field mt-1 w-full"
+                                        /></label
+                                    >
+                                    <label
+                                        class="block text-sm font-medium text-slate-700"
+                                        >Category<select
+                                            bind:value={
+                                                selectedAlias.categoryId
+                                            }
+                                            class="field mt-1 w-full"
+                                            >{#each categories as category}<option
+                                                    value={category.id}
+                                                    >{category.name}</option
+                                                >{/each}</select
+                                        ></label
+                                    >
+                                    <label
+                                        class="block text-sm font-medium text-slate-700"
+                                        >Match field<select
+                                            bind:value={selectedAlias.field}
+                                            class="field mt-1 w-full"
+                                            ><option value="any"
+                                                >Any statement field</option
+                                            ><option value="text"
+                                                >Description only</option
+                                            ><option value="transaction_type"
+                                                >Transaction type</option
+                                            ><option value="category"
+                                                >Source category</option
+                                            ></select
+                                        ></label
+                                    >
+                                    <label
+                                        class="block text-sm font-medium text-slate-700"
+                                        >Transaction type filter<input
+                                            bind:value={
+                                                selectedAlias.transactionType
+                                            }
+                                            class="field mt-1 w-full"
+                                            placeholder="Optional"
+                                        /></label
+                                    >
+                                    <Button
+                                        class="w-full justify-center"
+                                        onclick={() =>
+                                            updateAlias(selectedAlias)}
+                                        disabled={saving ||
+                                            !selectedAlias.value.trim()}
+                                        ><Check size={14} />Save changes</Button
+                                    >
+                                </div>
+                                <div
+                                    class="flex shrink-0 justify-end border-t border-slate-100 p-3"
+                                >
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onclick={() => (editingAliasId = '')}
+                                        >Cancel</Button
+                                    >
+                                </div>
+                            {:else}
+                                <div class="min-h-0 flex-1 overflow-y-auto">
+                                    <dl
+                                        class="divide-y divide-slate-100 px-4 text-sm"
+                                    >
+                                        <div
+                                            class="grid grid-cols-[minmax(90px,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3"
+                                        >
+                                            <dt class="text-slate-500">
+                                                Match phrase
+                                            </dt>
+                                            <dd
+                                                class="flex min-w-0 items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 font-semibold text-slate-800"
+                                            >
+                                                <span class="truncate"
+                                                    >{selectedAlias.value}</span
+                                                ><button
+                                                    class="icon-button h-8 w-8 shrink-0"
+                                                    title="Copy match phrase"
+                                                    aria-label="Copy match phrase"
+                                                    onclick={() =>
+                                                        copyAliasValue(
+                                                            selectedAlias
+                                                        )}
+                                                    >{#if copiedAliasId === selectedAlias.id}<Check
+                                                            size={15}
+                                                        />{:else}<Copy
+                                                            size={15}
+                                                        />{/if}</button
+                                                >
+                                            </dd>
+                                        </div>
+                                        <div
+                                            class="grid grid-cols-[minmax(90px,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3"
+                                        >
+                                            <dt class="text-slate-500">
+                                                Category
+                                            </dt>
+                                            <dd
+                                                class="min-w-0 truncate rounded-lg bg-slate-50 px-3 py-2 font-semibold text-slate-800"
+                                            >
+                                                {selectedCategory?.name ??
+                                                    'Uncategorized'}
+                                            </dd>
+                                        </div>
+                                        <div
+                                            class="grid grid-cols-[minmax(90px,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3"
+                                        >
+                                            <dt class="text-slate-500">
+                                                Match
+                                            </dt>
+                                            <dd
+                                                class="min-w-0 truncate rounded-lg bg-slate-50 px-3 py-2 font-semibold text-slate-800"
+                                            >
+                                                {selectedAlias.field === 'text'
+                                                    ? 'Description only'
+                                                    : selectedAlias.field ===
+                                                        'transaction_type'
+                                                      ? 'Transaction type'
+                                                      : selectedAlias.field ===
+                                                          'category'
+                                                        ? 'Source category'
+                                                        : 'Any statement field'}
+                                            </dd>
+                                        </div>
+                                        {#if selectedAlias.transactionType}<div
+                                                class="grid grid-cols-[minmax(90px,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3"
+                                            >
+                                                <dt class="text-slate-500">
+                                                    Transaction type
+                                                </dt>
+                                                <dd
+                                                    class="min-w-0 truncate rounded-lg bg-slate-50 px-3 py-2 font-semibold text-slate-800"
+                                                >
+                                                    {selectedAlias.transactionType}
+                                                </dd>
+                                            </div>{/if}
+                                        <div
+                                            class="grid grid-cols-[minmax(90px,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3"
+                                        >
+                                            <dt class="text-slate-500">
+                                                Matches
+                                            </dt>
+                                            <dd
+                                                class="font-semibold text-slate-800"
+                                            >
+                                                {rules?.aliasUsage?.[
+                                                    selectedAlias.id
+                                                ] ?? 0} statements
+                                            </dd>
+                                        </div>
+                                        {#if aliasCreatedLabel(selectedAlias.createdAt)}<div
+                                                class="grid grid-cols-[minmax(90px,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3"
+                                            >
+                                                <dt class="text-slate-500">
+                                                    Created
+                                                </dt>
+                                                <dd
+                                                    class="font-medium text-slate-800"
+                                                >
+                                                    {aliasCreatedLabel(
+                                                        selectedAlias.createdAt
+                                                    )}
+                                                </dd>
+                                            </div>{/if}
+                                    </dl>
+                                </div>
+                                <section
+                                    class="shrink-0 border-t border-slate-100 px-4 py-3"
+                                >
+                                    <h4
+                                        class="text-sm font-bold text-slate-900"
+                                    >
+                                        Recent matching statement
+                                    </h4>
+                                    {#if selectedAliasMatches[0]}
+                                        {@const statement =
+                                            selectedAliasMatches[0]}
+                                        <button
+                                            class="mt-2 flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-left transition hover:border-indigo-200 hover:bg-indigo-50/60"
+                                            onclick={() =>
+                                                openStatementsForAlias(
+                                                    selectedAlias
+                                                )}
+                                            title="Open matching statements"
+                                        >
+                                            <span class="min-w-0 flex-1"
+                                                ><span
+                                                    class="block truncate text-sm font-semibold text-slate-800"
+                                                    >{statement.text ||
+                                                        statement.transactionType ||
+                                                        'Untitled statement'}</span
+                                                ><span
+                                                    class="mt-1 block text-xs text-slate-500"
+                                                    >{statement.transactionType ||
+                                                        'Unknown type'} · {statement.date
+                                                        ? dateLabel(
+                                                              statement.date.slice(
+                                                                  0,
+                                                                  10
+                                                              )
+                                                          )
+                                                        : 'No date'}</span
+                                                ></span
+                                            >
+                                            <span
+                                                class="shrink-0 text-right text-sm font-semibold text-slate-800"
+                                                >{money(statement.amount)}<span
+                                                    class="ml-1 text-xs font-medium text-slate-500"
+                                                    >{statement.currency}</span
+                                                ></span
+                                            ><ChevronRight
+                                                size={16}
+                                                class="shrink-0 text-slate-500"
+                                            />
+                                        </button>
+                                    {:else}
+                                        <p
+                                            class="mt-2 rounded-xl bg-slate-50 p-3 text-xs text-slate-500"
+                                        >
+                                            No matching statements in this
+                                            ledger.
+                                        </p>
+                                    {/if}
+                                </section>
+                                <div
+                                    class="grid shrink-0 grid-cols-2 gap-2 border-t border-slate-100 p-3"
+                                >
+                                    <button
+                                        class="flex h-10 items-center justify-center gap-2 rounded-lg border border-indigo-300 bg-white px-3 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                                        onclick={() =>
+                                            (editingAliasId = selectedAlias.id)}
+                                        ><Pencil size={15} />Edit alias</button
+                                    >
+                                    <button
+                                        class="flex h-10 items-center justify-center gap-2 rounded-lg border border-rose-300 bg-white px-3 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
+                                        onclick={() =>
+                                            removeAlias(selectedAlias.id)}
+                                        ><Trash2 size={15} />Delete alias</button
+                                    >
+                                </div>
+                            {/if}
+                        {:else}
+                            <div
+                                class="flex h-full min-h-64 flex-col items-center justify-center p-8 text-center"
+                            >
+                                <Tag size={23} class="text-slate-300" />
+                                <h3 class="mt-3 font-semibold text-slate-800">
+                                    Select an alias
+                                </h3>
+                                <p class="mt-1 max-w-56 text-sm text-slate-500">
+                                    Choose a rule from the list to inspect or
+                                    edit its details.
+                                </p>
+                            </div>
+                        {/if}
+                    </Card>
                 </div>
             </section>
         {:else if page === 'statements'}
             <section class="space-y-5 animate-float-in">
-                {#if recurringRows.some((row) => row.reviewStatus !== 'denied')}
-                    <Card
-                        className="overflow-hidden border-emerald-100 bg-white p-0"
-                        ><div
-                            class="border-b border-emerald-100 bg-emerald-50/50 px-5 py-4"
-                        >
-                            <p class="label text-emerald-600">
-                                Auto-detected recurring
-                            </p>
-                            <h3
-                                class="mt-1 text-lg font-semibold text-slate-950"
-                            >
-                                Recurring series found in this ledger
-                            </h3>
-                            <p class="hint">
-                                These counts are the total non-denied
-                                observations found for each repeating payment or
-                                income.
-                            </p>
-                        </div>
-                        <div
-                            class="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3"
-                        >
-                            {#each recurringRows
-                                .filter((row) => row.reviewStatus !== 'denied')
-                                .slice(0, 6) as row}<button
-                                    class="recurring-context-row"
-                                    onclick={() => navigate('recurring')}
-                                    ><span class="min-w-0 text-left"
-                                        ><span
-                                            class="block truncate font-semibold text-slate-800"
-                                            >{row.label}</span
-                                        ><span
-                                            class="mt-1 block truncate text-xs text-slate-500"
-                                            >Auto-detected · {row.direction ===
-                                            'income'
-                                                ? 'income'
-                                                : 'payment'}</span
-                                        ></span
-                                    ><span class="shrink-0 text-right"
-                                        ><strong class="block text-emerald-700"
-                                            >{row.observationIds.length}</strong
-                                        ><span
-                                            class="text-[11px] text-slate-400"
-                                            >observations</span
-                                        ></span
-                                    ></button
-                                >{/each}
-                        </div>
-                        {#if recurringRows.filter((row) => row.reviewStatus !== 'denied').length > 6}<button
-                                class="load-more-link"
-                                onclick={() => navigate('recurring')}
-                                >Open all {recurringRows.filter(
-                                    (row) => row.reviewStatus !== 'denied'
-                                ).length} recurring series <ArrowUpRight
-                                    size={14}
-                                /></button
-                            >{/if}</Card
-                    >
-                {/if}
-                <Card className="border-emerald-100 bg-emerald-50/50 p-4"
-                    ><div
-                        class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-                    >
-                        <div>
-                            <p class="label text-emerald-600">
-                                Recurring context
-                            </p>
-                            <p class="mt-1 text-sm text-slate-700">
-                                Auto-detected recurring statements stay linked
-                                to their series, with confirmed and pending
-                                observations available from the Recurring view.
-                            </p>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <span
-                                class="rounded-xl bg-white/80 px-3 py-2 text-xs font-semibold text-emerald-700"
-                                >{recurringRows
-                                    .filter(
-                                        (row) => row.reviewStatus !== 'denied'
-                                    )
-                                    .reduce(
-                                        (total, row) =>
-                                            total + row.observationIds.length,
-                                        0
-                                    )} observations</span
-                            ><button
-                                class="icon-button"
-                                title="Open recurring view"
-                                aria-label="Open recurring view"
-                                onclick={() => navigate('recurring')}
-                                ><ArrowUpRight size={17} /></button
-                            >
-                        </div>
-                    </div></Card
-                >
                 <div
                     class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"
                 >
@@ -4369,12 +5080,23 @@
         {:else if page === 'categories'}
             <section class="space-y-5 animate-float-in">
                 {#if rules && categories.length === 0 && aliases.length === 0}
-                    <Card className="flex flex-wrap items-center justify-between gap-3 border-indigo-200 bg-indigo-50/70 p-5">
+                    <Card
+                        className="flex flex-wrap items-center justify-between gap-3 border-indigo-200 bg-indigo-50/70 p-5"
+                    >
                         <div>
-                            <h3 class="font-semibold text-slate-900">Start with a generic category set?</h3>
-                            <p class="mt-1 text-sm text-slate-600">Adds common household categories to this ledger. You can rename or remove them later.</p>
+                            <h3 class="font-semibold text-slate-900">
+                                Start with a generic category set?
+                            </h3>
+                            <p class="mt-1 text-sm text-slate-600">
+                                Adds common household categories to this ledger.
+                                You can rename or remove them later.
+                            </p>
                         </div>
-                        <Button size="sm" onclick={applyGenericRulesTemplate} disabled={saving}>Use generic categories</Button>
+                        <Button
+                            size="sm"
+                            onclick={applyGenericRulesTemplate}
+                            disabled={saving}>Use generic categories</Button
+                        >
                     </Card>
                 {/if}
                 <div>
@@ -4608,7 +5330,7 @@
                                     variant="outline"
                                     onclick={() => quickCreate(item)}
                                     disabled={saving}
-                                className="h-10 w-28 shrink-0 whitespace-nowrap px-3"
+                                    className="h-10 w-28 shrink-0 whitespace-nowrap px-3"
                                     ><WandSparkles size={14} />Create alias</Button
                                 >
                             </div>{:else}<p
@@ -4703,22 +5425,136 @@
             >
                 <div class="border-b border-slate-100 px-5 py-4">
                     <p class="label text-indigo-500">Unmatched statement</p>
-                    <h2 id="quick-alias-title" class="mt-1 text-xl font-semibold text-slate-950">Create alias</h2>
-                    <p class="mt-2 text-sm text-slate-600">{quickAliasStatement.text || quickAliasStatement.transactionType || 'Untitled statement'}</p>
+                    <h2
+                        id="quick-alias-title"
+                        class="mt-1 text-xl font-semibold text-slate-950"
+                    >
+                        Create alias
+                    </h2>
+                    <p class="mt-2 text-sm text-slate-600">
+                        {quickAliasStatement.text ||
+                            quickAliasStatement.transactionType ||
+                            'Untitled statement'}
+                    </p>
                 </div>
                 <div class="space-y-4 p-5">
-                    <label class="block text-sm font-medium text-slate-700">Alias phrase
-                        <input bind:value={quickAliasValue} class="field mt-1 w-full" aria-label="Alias phrase" />
+                    <label class="block text-sm font-medium text-slate-700"
+                        >Alias phrase
+                        <input
+                            bind:value={quickAliasValue}
+                            class="field mt-1 w-full"
+                            aria-label="Alias phrase"
+                        />
                     </label>
-                    <label class="block text-sm font-medium text-slate-700">Save to category
-                        <select bind:value={quickAliasCategoryId} class="field mt-1 w-full" aria-label="Alias category">
+                    <label class="block text-sm font-medium text-slate-700"
+                        >Save to category
+                        <select
+                            bind:value={quickAliasCategoryId}
+                            class="field mt-1 w-full"
+                            aria-label="Alias category"
+                        >
                             <option value="">Choose category</option>
-                            {#each categories as category}<option value={category.id}>{category.name}</option>{/each}
+                            {#each categories as category}<option
+                                    value={category.id}>{category.name}</option
+                                >{/each}
                         </select>
                     </label>
                     <div class="flex justify-end gap-2">
-                        <Button variant="outline" onclick={() => (quickAliasStatement = null)}>Cancel</Button>
-                        <Button onclick={saveQuickAlias} disabled={saving || !quickAliasValue.trim() || !quickAliasCategoryId}><WandSparkles size={14} />Create alias</Button>
+                        <Button
+                            variant="outline"
+                            onclick={() => (quickAliasStatement = null)}
+                            >Cancel</Button
+                        >
+                        <Button
+                            onclick={saveQuickAlias}
+                            disabled={saving ||
+                                !quickAliasValue.trim() ||
+                                !quickAliasCategoryId}
+                            ><WandSparkles size={14} />Create alias</Button
+                        >
+                    </div>
+                </div>
+            </div>
+        </div>
+    {/if}
+    {#if showAliasCreateDialog}
+        <div
+            class="modal-backdrop"
+            role="presentation"
+            onclick={() => (showAliasCreateDialog = false)}
+        >
+            <div
+                class="modal-panel max-w-lg"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="create-alias-title"
+                tabindex="-1"
+                onclick={(event) => event.stopPropagation()}
+                onkeydown={(event) => event.stopPropagation()}
+            >
+                <div class="border-b border-slate-100 px-5 py-4">
+                    <p class="label text-indigo-500">
+                        Rules · {aliases.length}
+                    </p>
+                    <h2
+                        id="create-alias-title"
+                        class="mt-1 text-xl font-semibold text-slate-950"
+                    >
+                        Create alias
+                    </h2>
+                    <p class="mt-1 text-sm text-slate-500">
+                        Matching is case-insensitive and applies to future
+                        statement imports.
+                    </p>
+                </div>
+                <div class="space-y-4 p-5">
+                    <label class="block text-sm font-medium text-slate-700"
+                        >Match phrase<input
+                            bind:value={newAlias.value}
+                            class="field mt-1 w-full"
+                            placeholder="e.g. Rewe, Edeka, salary"
+                        /></label
+                    >
+                    <label class="block text-sm font-medium text-slate-700"
+                        >Category<select
+                            bind:value={newAlias.categoryId}
+                            class="field mt-1 w-full"
+                            >{#each categories as category}<option
+                                    value={category.id}>{category.name}</option
+                                >{/each}</select
+                        ></label
+                    >
+                    <label class="block text-sm font-medium text-slate-700"
+                        >Match field<select
+                            bind:value={newAlias.field}
+                            class="field mt-1 w-full"
+                            ><option value="any">Any statement field</option
+                            ><option value="text">Description only</option
+                            ><option value="transaction_type"
+                                >Transaction type</option
+                            ><option value="category">Source category</option
+                            ></select
+                        ></label
+                    >
+                    <label class="block text-sm font-medium text-slate-700"
+                        >Transaction type filter<input
+                            bind:value={newAlias.transactionType}
+                            class="field mt-1 w-full"
+                            placeholder="Optional"
+                        /></label
+                    >
+                    <div class="flex justify-end gap-2">
+                        <Button
+                            variant="outline"
+                            onclick={() => (showAliasCreateDialog = false)}
+                            >Cancel</Button
+                        ><Button
+                            onclick={addAlias}
+                            disabled={saving ||
+                                !newAlias.value.trim() ||
+                                !newAlias.categoryId}
+                            ><Plus size={14} />Create alias</Button
+                        >
                     </div>
                 </div>
             </div>
@@ -4855,6 +5691,42 @@
                                 onclick={saveRecurringAlias}
                                 disabled={recurringAliasScanning}
                                 ><Check size={14} />Save and scan</Button
+                            >
+                        </div>
+                    </div>
+                {:else if recurringDialog.kind === 'end-date'}
+                    <div class="space-y-5 p-5">
+                        <p class="text-sm text-slate-600">
+                            Keep this payment confirmed for its history, and
+                            stop forecasting it after the date it ended.
+                        </p>
+                        <label
+                            class="block text-sm font-medium text-slate-700"
+                            for="recurring-end-date"
+                            >Effective end date
+                            <input
+                                id="recurring-end-date"
+                                type="date"
+                                bind:value={recurringEndDateDraft}
+                                class="field mt-1 w-full"
+                            />
+                        </label>
+                        <div class="flex flex-wrap justify-end gap-2">
+                            {#if recurringDialog.row.endedAt}<Button
+                                    variant="outline"
+                                    onclick={() => saveRecurringEndDate(null)}
+                                    disabled={saving}>Remove end date</Button
+                                >{/if}
+                            <Button
+                                variant="outline"
+                                onclick={closeRecurringDialog}>Cancel</Button
+                            >
+                            <Button
+                                onclick={() =>
+                                    saveRecurringEndDate(recurringEndDateDraft)}
+                                disabled={saving ||
+                                    !isDateKey(recurringEndDateDraft)}
+                                ><Check size={14} />Save end date</Button
                             >
                         </div>
                     </div>

@@ -166,6 +166,16 @@ export class FinanceController {
         return this.financeService.setRecurringDecision(this.requireLedger(ledgerId), seriesId, body.decision)
     }
 
+    @Put('recurring/:ledgerId/ends/:seriesId')
+    setRecurringEndDate(@Param('ledgerId') ledgerId: string, @Param('seriesId') seriesId: string, @Body() body: Record<string, unknown>) {
+        if (body.endedAt !== null) {
+            if (typeof body.endedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.endedAt)) throw new BadRequestException('endedAt must be a valid YYYY-MM-DD date or null')
+            const date = new Date(`${body.endedAt}T00:00:00.000Z`)
+            if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== body.endedAt) throw new BadRequestException('endedAt must be a valid YYYY-MM-DD date or null')
+        }
+        return this.financeService.setRecurringEndDate(this.requireLedger(ledgerId), seriesId, (body.endedAt as string | null) ?? undefined)
+    }
+
     @Put('recurring/:ledgerId/statements/:statementId')
     setManualRecurring(@Param('ledgerId') ledgerId: string, @Param('statementId') statementId: string, @Body() body: Record<string, unknown>) {
         if (body.direction !== 'income' && body.direction !== 'expense' && body.direction !== null) throw new BadRequestException('direction must be income, expense, or null')

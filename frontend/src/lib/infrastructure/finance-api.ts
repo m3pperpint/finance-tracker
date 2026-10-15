@@ -62,6 +62,10 @@ export class FinanceApi implements FinanceGateway {
         return this.send(`/finance/recurring/${encodeURIComponent(ledgerId)}/decisions/${encodeURIComponent(seriesId)}`, 'PUT', { decision })
     }
 
+    async setRecurringEndDate(ledgerId: string, seriesId: string, endedAt: string | null) {
+        return this.send(`/finance/recurring/${encodeURIComponent(ledgerId)}/ends/${encodeURIComponent(seriesId)}`, 'PUT', { endedAt })
+    }
+
     async setManualRecurring(ledgerId: string, statementId: string, direction: RecurrenceDirection | null) {
         return this.send(`/finance/recurring/${encodeURIComponent(ledgerId)}/statements/${encodeURIComponent(statementId)}`, 'PUT', { direction })
     }

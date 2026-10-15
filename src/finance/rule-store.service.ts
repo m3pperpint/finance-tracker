@@ -18,6 +18,7 @@ interface RuleFile {
     categoriesByLedger: Record<string, ManagedCategory[]>
     aliasesByFile: Record<string, AliasRule[]>
     recurringDecisionsByFile: Record<string, Record<string, RecurringDecision>>
+    recurringEndDatesByFile: Record<string, Record<string, string>>
     manualRecurringByFile: Record<string, Record<string, RecurrenceDirection>>
     recurringAliasesByFile: Record<string, Record<string, string>>
     recurringGroupsByFile: Record<string, RecurringMergeGroup[]>
@@ -45,6 +46,7 @@ export class RuleStoreService {
                 categoriesByLedger: Object.fromEntries(keys.map((key) => [key, (parsed.categories ?? []).filter((category) => referenced.has(category.id)).map((category) => ({ ...category }))])),
                 aliasesByFile: parsed.aliasesByFile ?? {},
                 recurringDecisionsByFile: {},
+                recurringEndDatesByFile: {},
                 manualRecurringByFile: {},
                 recurringAliasesByFile: {},
                 recurringGroupsByFile: {},
@@ -57,6 +59,7 @@ export class RuleStoreService {
             categoriesByLedger: parsed.categoriesByLedger ?? {},
             aliasesByFile: parsed.aliasesByFile ?? {},
             recurringDecisionsByFile: parsed.recurringDecisionsByFile ?? {},
+            recurringEndDatesByFile: parsed.recurringEndDatesByFile ?? {},
             manualRecurringByFile: parsed.manualRecurringByFile ?? {},
             recurringAliasesByFile: parsed.recurringAliasesByFile ?? {},
             recurringGroupsByFile: parsed.recurringGroupsByFile ?? {},
@@ -80,6 +83,7 @@ export class RuleStoreService {
             categoriesByLedger: Object.fromEntries([...ledgerKeys].map((key) => [key, (parsed.categories ?? []).map((category) => ({ ...category }))])),
             aliasesByFile: parsed.aliasesByFile ?? {},
             recurringDecisionsByFile: parsed.recurringDecisionsByFile ?? {},
+            recurringEndDatesByFile: parsed.recurringEndDatesByFile ?? {},
             manualRecurringByFile: parsed.manualRecurringByFile ?? {},
             recurringAliasesByFile: parsed.recurringAliasesByFile ?? {},
             recurringGroupsByFile: parsed.recurringGroupsByFile ?? {},
@@ -89,7 +93,7 @@ export class RuleStoreService {
     }
 
     private empty(): RuleFile {
-        return { version: 6, categoriesByLedger: {}, aliasesByFile: {}, recurringDecisionsByFile: {}, manualRecurringByFile: {}, recurringAliasesByFile: {}, recurringGroupsByFile: {}, recurringObservationIdsByFile: {}, importProfiles: {}, profileByFile: {} }
+        return { version: 6, categoriesByLedger: {}, aliasesByFile: {}, recurringDecisionsByFile: {}, recurringEndDatesByFile: {}, manualRecurringByFile: {}, recurringAliasesByFile: {}, recurringGroupsByFile: {}, recurringObservationIdsByFile: {}, importProfiles: {}, profileByFile: {} }
     }
 
     private ledgerKeys(collection: Record<string, unknown>) { return Object.keys(collection).filter((key) => key.startsWith('ledger:')) }
@@ -225,6 +229,20 @@ export class RuleStoreService {
     getRecurringDecision(fileName: string, seriesId: string): RecurringDecision | undefined {
         const data = this.read()
         return data.recurringDecisionsByFile[this.ledgerKey(fileName)]?.[seriesId]
+    }
+
+    setRecurringEndDate(fileName: string, seriesId: string, endedAt?: string) {
+        const data = this.ensure(fileName, [])
+        const key = this.ledgerKey(fileName)
+        data.recurringEndDatesByFile[key] ??= {}
+        if (endedAt) data.recurringEndDatesByFile[key][seriesId] = endedAt
+        else delete data.recurringEndDatesByFile[key][seriesId]
+        this.write(data)
+        return { seriesId, endedAt: endedAt ?? null }
+    }
+
+    getRecurringEndDates(fileName: string): Record<string, string> {
+        return this.read().recurringEndDatesByFile[this.ledgerKey(fileName)] ?? {}
     }
 
     setManualRecurring(fileName: string, statement: string, direction: RecurrenceDirection | undefined) {

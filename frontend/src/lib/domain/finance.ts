@@ -94,6 +94,7 @@ export interface RecurringSeries {
     expectedDateTo: string
     confidence: RecurrenceConfidence
     reviewStatus: RecurringReviewStatus
+    endedAt?: string
     evidence: {
         occurrenceCount: number
         coveredCycles: number

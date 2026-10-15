@@ -115,6 +115,7 @@ export class FinanceService {
         const resolver = this.ruleStore.getCategoryResolver(ledgerId, ledger.statements, ledger.ids)
         const definitions = this.ruleStore.getCategoryDefinitions(ledgerId, ledger.statements)
         const settings = this.ruleStore.getRecurringSettings(ledgerId)
+        const endDates = this.ruleStore.getRecurringEndDates(ledgerId)
         return detectRecurring(ledger.statements, {
             getStatementId: (index) => ledger.ids[index],
         }).map((series) => {
@@ -125,10 +126,12 @@ export class FinanceService {
             }
             const category = [...categoryCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
             const definition = definitions.find((item) => item.category === category)
+            const endedAt = endDates[series.id]
             return {
                 ...series,
                 ...(settings.aliases[series.id] ? { alias: settings.aliases[series.id] } : {}),
                 reviewStatus: this.ruleStore.getRecurringDecision(ledgerId, series.id) ?? 'pending',
+                ...(endedAt ? { endedAt } : {}),
                 ...(category ? { category, necessity: definition?.necessity ?? 'unclassified', control: definition?.control ?? 'unclassified' } : {}),
             }
         })
@@ -177,6 +180,7 @@ export class FinanceService {
     }
 
     setRecurringDecision(ledgerId: string, seriesId: string, decision: Parameters<RuleStoreService['setRecurringDecision']>[2]) { return this.ruleStore.setRecurringDecision(ledgerId, seriesId, decision) }
+    setRecurringEndDate(ledgerId: string, seriesId: string, endedAt?: string) { return this.ruleStore.setRecurringEndDate(ledgerId, seriesId, endedAt) }
     setManualRecurring(ledgerId: string, statement: string, direction: Parameters<RuleStoreService['setManualRecurring']>[2]) { return this.ruleStore.setManualRecurring(ledgerId, statement, direction) }
     createCategory(ledgerId: string, name: string, necessity: 'necessity' | 'convenience') { return this.ruleStore.createCategory(ledgerId, name, necessity) }
     updateCategory(ledgerId: string, id: string, name: string, necessity: 'necessity' | 'convenience') { return this.ruleStore.updateCategory(ledgerId, id, name, necessity) }
