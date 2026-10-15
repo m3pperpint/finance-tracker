@@ -18,6 +18,7 @@ const knownHeaders: Record<string, string> = {
     'booking date': 'date',
     'value date': 'date_executed',
     'transaction type': 'transaction_type',
+    type: 'transaction_type',
     description: 'text',
     'transaction description': 'text',
     amount: 'amount',
