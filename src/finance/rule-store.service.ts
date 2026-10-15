@@ -1,9 +1,10 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { basename, dirname } from 'path'
+import { basename, dirname, join } from 'path'
 import { AliasRule, ClassifiedStatement, ManagedCategory, categoryId, classifyStatement, statementId } from '../core/finance/rule-model.js'
 import type { BankStatement, SpendingCategoryDefinition, SpendingNecessity } from '../core/common/common.dto.js'
 import type { RecurrenceDirection } from '../core/finance/recurrence-model.js'
+import { FinanceRulesHistoryService } from './finance-rules-history.service.js'
 
 export type RecurringDecision = 'confirmed' | 'denied'
 
@@ -13,8 +14,8 @@ export interface RecurringMergeGroup {
 }
 
 interface RuleFile {
-    version: 5
-    categories: ManagedCategory[]
+    version: 6
+    categoriesByLedger: Record<string, ManagedCategory[]>
     aliasesByFile: Record<string, AliasRule[]>
     recurringDecisionsByFile: Record<string, Record<string, RecurringDecision>>
     manualRecurringByFile: Record<string, Record<string, RecurrenceDirection>>
@@ -29,15 +30,19 @@ interface RuleFile {
 export class RuleStoreService {
     private readonly path = process.env.FINANCE_RULES_PATH || './data/finance-rules.json'
 
+    constructor(private readonly history: FinanceRulesHistoryService) {}
+
     private read(): RuleFile {
         if (!existsSync(this.path)) return this.empty()
-        const parsed = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<Omit<RuleFile, 'version'>> & { version?: number }
+        const parsed = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<Omit<RuleFile, 'version' | 'categoriesByLedger'>> & { version?: number; categories?: ManagedCategory[]; categoriesByLedger?: Record<string, ManagedCategory[]> }
         if (parsed.version === 2) {
             const aliases = Object.values(parsed.aliasesByFile ?? {}).flat()
             const referenced = new Set(aliases.map((alias) => alias.categoryId))
+            const keys = this.ledgerKeys(parsed.aliasesByFile ?? {})
+            if (!keys.length && parsed.categories?.length) keys.push('ledger:legacy')
             return {
-                version: 5,
-                categories: (parsed.categories ?? []).filter((category) => referenced.has(category.id)),
+                version: 6,
+                categoriesByLedger: Object.fromEntries(keys.map((key) => [key, (parsed.categories ?? []).filter((category) => referenced.has(category.id)).map((category) => ({ ...category }))])),
                 aliasesByFile: parsed.aliasesByFile ?? {},
                 recurringDecisionsByFile: {},
                 manualRecurringByFile: {},
@@ -47,10 +52,32 @@ export class RuleStoreService {
                 importProfiles: {}, profileByFile: {},
             }
         }
+        if (parsed.version === 6) return {
+            version: 6,
+            categoriesByLedger: parsed.categoriesByLedger ?? {},
+            aliasesByFile: parsed.aliasesByFile ?? {},
+            recurringDecisionsByFile: parsed.recurringDecisionsByFile ?? {},
+            manualRecurringByFile: parsed.manualRecurringByFile ?? {},
+            recurringAliasesByFile: parsed.recurringAliasesByFile ?? {},
+            recurringGroupsByFile: parsed.recurringGroupsByFile ?? {},
+            recurringObservationIdsByFile: parsed.recurringObservationIdsByFile ?? {},
+            importProfiles: parsed.importProfiles ?? {}, profileByFile: parsed.profileByFile ?? {},
+        }
         if (parsed.version !== 3 && parsed.version !== 4 && parsed.version !== 5) return this.empty()
+        const ledgerKeys = new Set([
+            ...this.ledgerKeys(parsed.aliasesByFile ?? {}),
+            ...this.ledgerKeys(parsed.recurringDecisionsByFile ?? {}),
+            ...this.ledgerKeys(parsed.manualRecurringByFile ?? {}),
+            ...this.ledgerKeys(parsed.recurringAliasesByFile ?? {}),
+            ...this.ledgerKeys(parsed.recurringGroupsByFile ?? {}),
+            ...this.ledgerKeys(parsed.recurringObservationIdsByFile ?? {}),
+        ])
+        // Older rules files stored categories globally. Copy those definitions into each
+        // already-known ledger once; subsequent edits are strictly ledger-scoped.
+        if (!ledgerKeys.size && (parsed.categories?.length ?? 0) > 0) ledgerKeys.add('ledger:legacy')
         return {
-            version: 5,
-            categories: parsed.categories ?? [],
+            version: 6,
+            categoriesByLedger: Object.fromEntries([...ledgerKeys].map((key) => [key, (parsed.categories ?? []).map((category) => ({ ...category }))])),
             aliasesByFile: parsed.aliasesByFile ?? {},
             recurringDecisionsByFile: parsed.recurringDecisionsByFile ?? {},
             manualRecurringByFile: parsed.manualRecurringByFile ?? {},
@@ -62,8 +89,10 @@ export class RuleStoreService {
     }
 
     private empty(): RuleFile {
-        return { version: 5, categories: [], aliasesByFile: {}, recurringDecisionsByFile: {}, manualRecurringByFile: {}, recurringAliasesByFile: {}, recurringGroupsByFile: {}, recurringObservationIdsByFile: {}, importProfiles: {}, profileByFile: {} }
+        return { version: 6, categoriesByLedger: {}, aliasesByFile: {}, recurringDecisionsByFile: {}, manualRecurringByFile: {}, recurringAliasesByFile: {}, recurringGroupsByFile: {}, recurringObservationIdsByFile: {}, importProfiles: {}, profileByFile: {} }
     }
+
+    private ledgerKeys(collection: Record<string, unknown>) { return Object.keys(collection).filter((key) => key.startsWith('ledger:')) }
 
     getImportProfiles() { return this.read().importProfiles }
 
@@ -80,20 +109,15 @@ export class RuleStoreService {
 
     private aliasKey(data: RuleFile, ledgerId: string) { return this.ledgerKey(ledgerId) }
 
-    initializeLedger(ledgerId: string, legacyFiles: string[], importProfile?: string) {
+    initializeLedger(ledgerId: string) {
         const data = this.read(), key = this.ledgerKey(ledgerId)
         let changed = false
         if (!data.aliasesByFile[key]) {
-            const candidates = legacyFiles.flatMap((file) => {
-                const oldProfile = data.profileByFile[basename(file)]
-                return [data.aliasesByFile[basename(file)], oldProfile ? data.aliasesByFile[`profile:${oldProfile}`] : undefined].filter((items): items is AliasRule[] => Boolean(items))
-            })
-            const inherited = candidates.length
-                ? candidates.flat()
-                : importProfile
-                  ? data.aliasesByFile[`profile:${importProfile}`] ?? []
-                  : legacyFiles.length ? data.aliasesByFile['*'] ?? [] : []
-            data.aliasesByFile[key] = [...new Map(inherited.map((alias) => [alias.id, alias])).values()]
+            data.aliasesByFile[key] = []
+            changed = true
+        }
+        if (!data.categoriesByLedger[key]) {
+            data.categoriesByLedger[key] = []
             changed = true
         }
         for (const collection of [data.recurringDecisionsByFile, data.manualRecurringByFile, data.recurringAliasesByFile, data.recurringObservationIdsByFile]) {
@@ -103,7 +127,28 @@ export class RuleStoreService {
         if (changed) this.write(data)
     }
 
+    applyGenericTemplate(ledgerId: string) {
+        const data = this.ensure(ledgerId, [])
+        const key = this.ledgerKey(ledgerId)
+        if (data.categoriesByLedger[key].length || data.aliasesByFile[key].length) {
+            throw new ConflictException('The generic template can only be applied to a ledger without categories or aliases')
+        }
+        const templatePath = join(process.cwd(), 'data/finance-rules.template.json')
+        const template = JSON.parse(readFileSync(templatePath, 'utf8')) as { version?: number; categories?: ManagedCategory[] }
+        if (template.version !== 1 || !Array.isArray(template.categories)) {
+            throw new Error('The generic finance rules template is invalid')
+        }
+        data.categoriesByLedger[key] = template.categories.map((category) => ({ ...category }))
+        this.write(data)
+        return data.categoriesByLedger[key]
+    }
+
     private write(data: RuleFile) {
+        const existed = existsSync(this.path)
+        const before = existed
+            ? JSON.parse(readFileSync(this.path, 'utf8')) as Record<string, unknown>
+            : this.empty() as unknown as Record<string, unknown>
+        if (!this.history.recordChange(before, data as unknown as Record<string, unknown>) && existed) return
         mkdirSync(dirname(this.path), { recursive: true })
         writeFileSync(this.path, JSON.stringify(data, null, 2))
     }
@@ -111,14 +156,16 @@ export class RuleStoreService {
     ensure(fileName: string, statements: BankStatement[]) {
         const data = this.read()
         const key = this.aliasKey(data, fileName)
-        if (!data.aliasesByFile[key]) data.aliasesByFile[key] = data.aliasesByFile['*'] ?? []
+        if (!data.aliasesByFile[key]) data.aliasesByFile[key] = []
+        if (!data.categoriesByLedger[key]) data.categoriesByLedger[key] = []
         this.write(data)
         return data
     }
 
     getRules(fileName: string, statements: BankStatement[], statementIds: string[] = statements.map((_, index) => statementId(fileName, index))) {
         const data = this.ensure(fileName, statements)
-        const aliases = data.aliasesByFile[this.aliasKey(data, fileName)] ?? []
+        const key = this.ledgerKey(fileName)
+        const aliases = data.aliasesByFile[key] ?? []
         const classified = statements.map((statement, index) => classifyStatement(statement, statementIds[index], aliases))
         const aliasUsage = new Map<string, number>()
         for (const item of classified) for (const alias of item.matches) aliasUsage.set(alias.id, (aliasUsage.get(alias.id) ?? 0) + 1)
@@ -132,7 +179,7 @@ export class RuleStoreService {
             for (const word of words) keywordCounts.set(word, (keywordCounts.get(word) ?? 0) + 1)
         }
         return {
-            categories: data.categories.map((category) => ({ ...category, aliasCount: aliases.filter((alias) => alias.categoryId === category.id).length })),
+            categories: (data.categoriesByLedger[key] ?? []).map((category) => ({ ...category, aliasCount: aliases.filter((alias) => alias.categoryId === category.id).length })),
             aliases,
             statements: [...classified].sort((a, b) => (b.statement.date?.getTime() ?? 0) - (a.statement.date?.getTime() ?? 0)).map((item) => ({
                 id: item.id,
@@ -148,7 +195,7 @@ export class RuleStoreService {
                 purpose: item.statement.purpose ?? '',
                 bankNumberOwner: item.statement.bank_number_owner ?? '',
                 status: item.status,
-                recurringDirection: data.manualRecurringByFile[this.ledgerKey(fileName)]?.[item.id] ?? data.manualRecurringByFile['*']?.[item.id],
+                recurringDirection: data.manualRecurringByFile[this.ledgerKey(fileName)]?.[item.id],
                 matches: item.matches.map((alias) => ({ id: alias.id, value: alias.value, categoryId: alias.categoryId })),
                 suggestions: item.status === 'conflict' ? [
                     { kind: 'transaction-type', label: `Keep one match for ${item.statement.transaction_type || 'this transaction type'}` },
@@ -177,7 +224,7 @@ export class RuleStoreService {
 
     getRecurringDecision(fileName: string, seriesId: string): RecurringDecision | undefined {
         const data = this.read()
-        return data.recurringDecisionsByFile[this.ledgerKey(fileName)]?.[seriesId] ?? data.recurringDecisionsByFile['*']?.[seriesId]
+        return data.recurringDecisionsByFile[this.ledgerKey(fileName)]?.[seriesId]
     }
 
     setManualRecurring(fileName: string, statement: string, direction: RecurrenceDirection | undefined) {
@@ -193,9 +240,9 @@ export class RuleStoreService {
     getRecurringSettings(fileName: string) {
         const data = this.ensure(fileName, [])
         return {
-            aliases: data.recurringAliasesByFile[this.ledgerKey(fileName)] ?? data.recurringAliasesByFile['*'] ?? {},
-            groups: data.recurringGroupsByFile[this.ledgerKey(fileName)] ?? data.recurringGroupsByFile['*'] ?? [],
-            observationIds: data.recurringObservationIdsByFile[this.ledgerKey(fileName)] ?? data.recurringObservationIdsByFile['*'] ?? {},
+            aliases: data.recurringAliasesByFile[this.ledgerKey(fileName)] ?? {},
+            groups: data.recurringGroupsByFile[this.ledgerKey(fileName)] ?? [],
+            observationIds: data.recurringObservationIdsByFile[this.ledgerKey(fileName)] ?? {},
         }
     }
 
@@ -246,7 +293,7 @@ export class RuleStoreService {
 
     getCategoryDefinitions(fileName: string, statements: BankStatement[]): SpendingCategoryDefinition[] {
         const data = this.ensure(fileName, statements)
-        return data.categories.map((category) => ({
+        return (data.categoriesByLedger[this.ledgerKey(fileName)] ?? []).map((category) => ({
             category: category.name,
             description: category.description,
             necessity: category.necessity,
@@ -255,49 +302,52 @@ export class RuleStoreService {
         })).sort((a, b) => a.category.localeCompare(b.category))
     }
 
-    createCategory(name: string, necessity: Exclude<SpendingNecessity, 'unclassified'>) {
-        const data = this.read()
+    createCategory(fileName: string, name: string, necessity: Exclude<SpendingNecessity, 'unclassified'>) {
+        const data = this.ensure(fileName, [])
+        const categories = data.categoriesByLedger[this.ledgerKey(fileName)]
         const clean = name.trim()
         if (!clean) throw new ConflictException('Category name is required')
         const id = categoryId(clean)
-        if (data.categories.some((category) => category.id === id)) throw new ConflictException('Category already exists')
-        data.categories.push({ id, name: clean, necessity, description: 'Custom spending category.' })
+        if (categories.some((category) => category.id === id)) throw new ConflictException('Category already exists')
+        categories.push({ id, name: clean, necessity, description: 'Custom spending category.' })
         this.write(data)
-        return data.categories.at(-1)
+        return categories.at(-1)
     }
 
-    updateCategory(id: string, name: string, necessity: Exclude<SpendingNecessity, 'unclassified'>) {
-        const data = this.read()
-        const category = data.categories.find((item) => item.id === id)
+    updateCategory(fileName: string, id: string, name: string, necessity: Exclude<SpendingNecessity, 'unclassified'>) {
+        const data = this.ensure(fileName, [])
+        const categories = data.categoriesByLedger[this.ledgerKey(fileName)]
+        const category = categories.find((item) => item.id === id)
         if (!category) throw new NotFoundException('Category not found')
         const clean = name.trim()
         const nextId = categoryId(clean)
         if (!clean) throw new ConflictException('Category name is required')
-        if (nextId !== id && data.categories.some((item) => item.id === nextId)) throw new ConflictException('Category already exists')
+        if (nextId !== id && categories.some((item) => item.id === nextId)) throw new ConflictException('Category already exists')
         category.name = clean
         category.necessity = necessity
         if (nextId !== id) {
             category.id = nextId
-            for (const aliases of Object.values(data.aliasesByFile)) for (const alias of aliases) if (alias.categoryId === id) alias.categoryId = nextId
+            for (const alias of data.aliasesByFile[this.ledgerKey(fileName)] ?? []) if (alias.categoryId === id) alias.categoryId = nextId
         }
         this.write(data)
         return category
     }
 
-    deleteCategory(id: string) {
-        const data = this.read()
-        if (Object.values(data.aliasesByFile).some((aliases) => aliases.some((alias) => alias.categoryId === id))) throw new ConflictException('Remove or reassign this category’s aliases first')
-        const index = data.categories.findIndex((category) => category.id === id)
+    deleteCategory(fileName: string, id: string) {
+        const data = this.ensure(fileName, [])
+        const categories = data.categoriesByLedger[this.ledgerKey(fileName)]
+        if ((data.aliasesByFile[this.ledgerKey(fileName)] ?? []).some((alias) => alias.categoryId === id)) throw new ConflictException('Remove or reassign this category’s aliases first')
+        const index = categories.findIndex((category) => category.id === id)
         if (index === -1) throw new NotFoundException('Category not found')
-        const [removed] = data.categories.splice(index, 1)
+        const [removed] = categories.splice(index, 1)
         this.write(data)
         return removed
     }
 
-    createAlias(fileName: string, alias: Omit<AliasRule, 'id'>) {
+    createAlias(fileName: string, alias: Omit<AliasRule, 'id' | 'createdAt'>) {
         const data = this.ensure(fileName, [])
-        if (!data.categories.some((category) => category.id === alias.categoryId)) throw new NotFoundException('Category not found')
-        const created = { ...alias, id: `alias-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }
+        if (!(data.categoriesByLedger[this.ledgerKey(fileName)] ?? []).some((category) => category.id === alias.categoryId)) throw new NotFoundException('Category not found')
+        const created: AliasRule = { ...alias, id: `alias-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, createdAt: new Date().toISOString() }
         const key = this.aliasKey(data, fileName)
         data.aliasesByFile[key] ??= []
         data.aliasesByFile[key].push(created)
@@ -305,12 +355,12 @@ export class RuleStoreService {
         return created
     }
 
-    updateAlias(fileName: string, id: string, patch: Partial<Omit<AliasRule, 'id'>>) {
+    updateAlias(fileName: string, id: string, patch: Partial<Omit<AliasRule, 'id' | 'createdAt'>>) {
         const data = this.read()
         const aliases = data.aliasesByFile[this.aliasKey(data, fileName)] ?? []
         const alias = aliases.find((item) => item.id === id)
         if (!alias) throw new NotFoundException('Alias not found')
-        if (patch.categoryId && !data.categories.some((category) => category.id === patch.categoryId)) throw new NotFoundException('Category not found')
+        if (patch.categoryId && !(data.categoriesByLedger[this.ledgerKey(fileName)] ?? []).some((category) => category.id === patch.categoryId)) throw new NotFoundException('Category not found')
         Object.assign(alias, patch)
         this.write(data)
         return alias
@@ -331,13 +381,13 @@ export class RuleStoreService {
         const aliases = data.aliasesByFile[this.aliasKey(data, fileName)] ?? []
         const result = classifyStatement(statement, statementId(fileName, index), aliases)
         if (result.status !== 'matched') return undefined
-        return data.categories.find((category) => category.id === result.matches[0].categoryId)?.name
+        return data.categoriesByLedger[this.ledgerKey(fileName)]?.find((category) => category.id === result.matches[0].categoryId)?.name
     }
 
     getCategoryResolver(fileName: string, statements: BankStatement[], statementIds: string[] = statements.map((_, index) => statementId(fileName, index))) {
         const data = this.ensure(fileName, statements)
         const aliases = data.aliasesByFile[this.aliasKey(data, fileName)] ?? []
-        const names = new Map(data.categories.map((category) => [category.id, category.name]))
+        const names = new Map((data.categoriesByLedger[this.ledgerKey(fileName)] ?? []).map((category) => [category.id, category.name]))
         return (statement: BankStatement, index: number) => {
             const result = classifyStatement(statement, statementIds[index], aliases)
             return result.status === 'matched' ? names.get(result.matches[0].categoryId) : undefined

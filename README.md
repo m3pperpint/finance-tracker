@@ -139,9 +139,13 @@ Supply `ledgerId` and optional `columnMappings` with each upload. The response i
 ## API endpoints
 
 - `GET /` - health/status message.
-- `GET /finance/ledgers` and `POST /finance/ledgers` - list or create a ledger; creation accepts `name`, optional loose `files`, and optional `importProfile`.
+- `GET /finance/ledgers` and `POST /finance/ledgers` - list or create a ledger; creation accepts `name`, optional loose `files`, optional `importProfile`, and `rulesTemplate` (`generic` or `scratch`).
+- `POST /finance/ledgers/:ledgerId/rules/template` - apply the tracked generic category template to a ledger with no categories or aliases.
 - `POST /finance/upload` - multipart upload with required `ledgerId` and `file`; optional `columnMappings` JSON field.
 - `GET /finance/import-profiles` and `POST /finance/import-profiles` - list and save named column-mapping profiles.
+- `POST /finance/ledgers/:ledgerId/categories`, `PUT /finance/ledgers/:ledgerId/categories/:id`, and `DELETE /finance/ledgers/:ledgerId/categories/:id` - manage spending categories for one ledger.
+- `GET /finance/rule-history?limit=100` - list recent finance-rules changes, newest first. Each event includes a revision, UTC timestamp, summary, and per-path/entity before and after details.
+- `GET /finance/rule-history/:revision` - reconstruct the complete finance rules state at a logged revision.
 - `GET /finance/dashboard/:ledgerId?mode=month&month=8&year=2025&top=5` - consistent scoped dashboard plus all spending categories, category definitions, available periods, complete-history evolution, and import summary.
 - `GET /finance/calculate/execution-types-sums/:ledgerId` - totals grouped by transaction type.
 - `GET /finance/calculate/most-amount-per-weekday/:ledgerId` - totals grouped by weekday.
@@ -149,6 +153,12 @@ Supply `ledgerId` and optional `columnMappings` with each upload. The response i
 - `GET /finance/calculate/top-spending-categories/:ledgerId?top=3&month=8&year=2025` - top spending categories for a selected month and year.
 
 Calculations use these canonical fields: `date`, `date_executed`, `transaction_type`, `text`, `amount`, `currency`, `bank_number_owner`, and `category`. Negative amounts are treated as spending by the category calculation.
+
+Changes to `data/finance-rules.json` are recorded in the append-only `data/finance-rules.history.jsonl` sidecar. The log starts with one baseline snapshot, then stores only changes (including additions, edits, removals, and moves) with before/after values. Repeated saves that do not change the rules are omitted. Both the rules file and its history are ignored by Git because they can contain private transaction aliases and account-specific profiles. Set `FINANCE_RULES_HISTORY_PATH` to store the history elsewhere; by default it is created beside the path configured by `FINANCE_RULES_PATH`.
+
+Finance rules are selected by ledger ID. Categories, aliases, recurring decisions, and recurring settings are ledger-specific; CSV column-mapping profiles remain reusable across ledgers. When an older rules file is first opened, its shared category definitions are copied into the ledgers already present in that file and then stored in the v6 `categoriesByLedger` structure.
+
+`data/finance-rules.template.json` is the tracked, bank-agnostic starter category set. New ledgers can copy it or start with no categories; it contains no aliases or account data. The same template can be applied later from the Categories page when the current ledger has no categories or aliases. Applying it copies categories into that ledger, so edits do not change the template or another ledger.
 
 ## Frontend structure
 

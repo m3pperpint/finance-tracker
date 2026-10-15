@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { FinanceService } from './finance.service.js'
+import { FinanceRulesHistoryService } from './finance-rules-history.service.js'
 import {
     CsvColumnMappings,
     ExecutionTypeWithAmounts,
@@ -26,7 +27,28 @@ import {
 
 @Controller('finance')
 export class FinanceController {
-    constructor(private readonly financeService: FinanceService) {}
+    constructor(
+        private readonly financeService: FinanceService,
+        private readonly rulesHistory: FinanceRulesHistoryService,
+    ) {}
+
+    @Get('rule-history')
+    getRuleHistory(@Query('limit') limit = '100') {
+        const parsedLimit = Number(limit)
+        if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 500) {
+            throw new BadRequestException('limit must be an integer between 1 and 500')
+        }
+        return this.rulesHistory.getHistory(parsedLimit)
+    }
+
+    @Get('rule-history/:revision')
+    getRuleHistoryRevision(@Param('revision') revision: string) {
+        const parsedRevision = Number(revision)
+        if (!Number.isSafeInteger(parsedRevision) || parsedRevision < 0) {
+            throw new BadRequestException('revision must be a non-negative integer')
+        }
+        return this.rulesHistory.getStateAtRevision(parsedRevision)
+    }
 
     @Post('upload')
     @UseInterceptors(FileInterceptor('file'))
@@ -60,10 +82,16 @@ export class FinanceController {
     getLedgers() { return this.financeService.getLedgers() }
 
     @Post('ledgers')
-    createLedger(@Body() body: { name?: string; files?: string[]; importProfile?: string }) {
+    createLedger(@Body() body: { name?: string; files?: string[]; importProfile?: string; rulesTemplate?: string }) {
         const files = Array.isArray(body.files) ? body.files.filter((value): value is string => typeof value === 'string') : []
         if (body.files !== undefined && (!Array.isArray(body.files) || files.length !== body.files.length)) throw new BadRequestException('files must be a list of CSV filenames')
-        return this.financeService.createLedger(this.requireText(body.name, 'name'), files, typeof body.importProfile === 'string' ? body.importProfile : undefined)
+        if (body.rulesTemplate !== undefined && body.rulesTemplate !== 'generic' && body.rulesTemplate !== 'scratch') throw new BadRequestException('rulesTemplate must be generic or scratch')
+        return this.financeService.createLedger(this.requireText(body.name, 'name'), files, typeof body.importProfile === 'string' ? body.importProfile : undefined, body.rulesTemplate as 'generic' | 'scratch' | undefined)
+    }
+
+    @Post('ledgers/:ledgerId/rules/template')
+    applyGenericRulesTemplate(@Param('ledgerId') ledgerId: string) {
+        return this.financeService.applyGenericRulesTemplate(this.requireLedger(ledgerId))
     }
 
     @Get('import-profiles')
@@ -144,19 +172,19 @@ export class FinanceController {
         return this.financeService.setManualRecurring(this.requireLedger(ledgerId), statementId, body.direction ?? undefined)
     }
 
-    @Post('categories')
-    createCategory(@Body() body: { name?: string; necessity?: 'necessity' | 'convenience' }) {
-        return this.financeService.createCategory(this.requireText(body.name, 'name'), this.requireNecessity(body.necessity))
+    @Post('ledgers/:ledgerId/categories')
+    createCategory(@Param('ledgerId') ledgerId: string, @Body() body: { name?: string; necessity?: 'necessity' | 'convenience' }) {
+        return this.financeService.createCategory(this.requireLedger(ledgerId), this.requireText(body.name, 'name'), this.requireNecessity(body.necessity))
     }
 
-    @Put('categories/:id')
-    updateCategory(@Param('id') id: string, @Body() body: { name?: string; necessity?: 'necessity' | 'convenience' }) {
-        return this.financeService.updateCategory(id, this.requireText(body.name, 'name'), this.requireNecessity(body.necessity))
+    @Put('ledgers/:ledgerId/categories/:id')
+    updateCategory(@Param('ledgerId') ledgerId: string, @Param('id') id: string, @Body() body: { name?: string; necessity?: 'necessity' | 'convenience' }) {
+        return this.financeService.updateCategory(this.requireLedger(ledgerId), id, this.requireText(body.name, 'name'), this.requireNecessity(body.necessity))
     }
 
-    @Delete('categories/:id')
-    deleteCategory(@Param('id') id: string) {
-        return this.financeService.deleteCategory(id)
+    @Delete('ledgers/:ledgerId/categories/:id')
+    deleteCategory(@Param('ledgerId') ledgerId: string, @Param('id') id: string) {
+        return this.financeService.deleteCategory(this.requireLedger(ledgerId), id)
     }
 
     @Post('rules/:ledgerId/aliases')
@@ -252,14 +280,14 @@ export class FinanceController {
         return value
     }
 
-    private parseAlias(body: Record<string, unknown>): Omit<AliasRule, 'id'> {
+    private parseAlias(body: Record<string, unknown>): Omit<AliasRule, 'id' | 'createdAt'> {
         const value = this.requireText(body.value, 'value')
         const categoryId = this.requireText(body.categoryId, 'categoryId')
         const field: AliasRule['field'] = body.field === 'text' || body.field === 'transaction_type' || body.field === 'category' ? body.field : 'any'
         return { value, categoryId, field, transactionType: typeof body.transactionType === 'string' ? body.transactionType.trim() || undefined : undefined, statementId: typeof body.statementId === 'string' ? body.statementId.trim() || undefined : undefined }
     }
 
-    private parseAliasPatch(body: Record<string, unknown>): Partial<Omit<AliasRule, 'id'>> {
+    private parseAliasPatch(body: Record<string, unknown>): Partial<Omit<AliasRule, 'id' | 'createdAt'>> {
         return {
             ...(body.value === undefined ? {} : { value: this.requireText(body.value, 'value') }),
             ...(body.categoryId === undefined ? {} : { categoryId: this.requireText(body.categoryId, 'categoryId') }),

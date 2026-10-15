@@ -76,6 +76,7 @@
 
     interface Alias {
         id: string
+        createdAt?: string
         value: string
         categoryId: string
         field: 'any' | 'text' | 'transaction_type' | 'category'
@@ -161,6 +162,7 @@
     let importHeaders: string[] = []
     let columnMappings: Record<string, string> = {}
     let importProfile = ''
+    let newLedgerRulesTemplate: 'generic' | 'scratch' = 'generic'
     let profileName = ''
     let importProfiles: { name: string; mappings: Record<string, string> }[] = []
     let loading = false
@@ -381,15 +383,6 @@
     $: selectedMerchantRows = merchantRows
         .filter((merchant) => merchant.category === selectedSpendingCategory)
         .slice(0, 8)
-    $: activeRecurring = recurring.filter(
-        (series) => series.reviewStatus !== 'denied'
-    )
-    $: recurringExpenses = activeRecurring.filter(
-        (series) => series.direction === 'expense'
-    )
-    $: recurringIncome = activeRecurring.filter(
-        (series) => series.direction === 'income'
-    )
     $: manualRecurringStatements =
         rules?.statements.filter((statement) => statement.recurringDirection) ??
         []
@@ -403,6 +396,17 @@
         Object.keys(recurringSettings.aliases).length
             ? buildRecurringRows()
             : []
+    // Merged rows represent one effective recurring stream throughout the app,
+    // not just in the inventory table.
+    $: activeRecurring = recurringRows.filter(
+        (series) => series.reviewStatus !== 'denied'
+    )
+    $: recurringExpenses = activeRecurring.filter(
+        (series) => series.direction === 'expense'
+    )
+    $: recurringIncome = activeRecurring.filter(
+        (series) => series.direction === 'income'
+    )
     $: monthlyRecurringExpenses = recurringExpenses.reduce(
         (total, series) =>
             total + series.amountModel.typicalAmount / series.intervalMonths,
@@ -463,6 +467,29 @@
             )
             .sort((a, b) => b.totalAmount - a.totalAmount)
             .slice(0, 5) ?? []
+    $: eligibleAliases = aliases.filter((alias) => {
+        const categoryQuery =
+            aliasCategorySearch[alias.categoryId]?.trim().toLocaleLowerCase() ??
+            ''
+        const value = alias.value.toLocaleLowerCase()
+        return (
+            (aliasCategoryFilter === 'all' ||
+                alias.categoryId === aliasCategoryFilter) &&
+            (aliasFieldFilter === 'all' || alias.field === aliasFieldFilter) &&
+            (!search.trim() || value.includes(search.trim().toLocaleLowerCase())) &&
+            (!categoryQuery || value.includes(categoryQuery))
+        )
+    })
+    $: hasAliasFilters = aliasCategoryFilter !== 'all' ||
+        aliasFieldFilter !== 'all' ||
+        aliasUsageFilter !== 'all' ||
+        Boolean(search.trim()) ||
+        Object.values(aliasCategorySearch).some((value) => Boolean(value.trim()))
+    $: filteredAliases = eligibleAliases.filter((alias) => {
+        const usage = rules?.aliasUsage?.[alias.id] ?? 0
+        return aliasUsageFilter === 'all' ||
+            (aliasUsageFilter === 'used' ? usage > 0 : usage === 0)
+    })
     $: aliasGroups = categories
         .filter(
             (category) =>
@@ -470,34 +497,8 @@
                 category.id === aliasCategoryFilter
         )
         .map((category) => {
-            const categoryQuery =
-                aliasCategorySearch[category.id]?.trim().toLocaleLowerCase() ??
-                ''
-            const categoryAliases = aliases
-                .filter((alias) => {
-                    const usage = rules?.aliasUsage?.[alias.id] ?? 0
-                    const searchMatches =
-                        !search.trim() ||
-                        alias.value
-                            .toLocaleLowerCase()
-                            .includes(search.trim().toLocaleLowerCase())
-                    const categorySearchMatches =
-                        !categoryQuery ||
-                        alias.value.toLocaleLowerCase().includes(categoryQuery)
-                    const usageMatches =
-                        aliasUsageFilter === 'all' ||
-                        (aliasUsageFilter === 'used' ? usage > 0 : usage === 0)
-                    const fieldMatches =
-                        aliasFieldFilter === 'all' ||
-                        alias.field === aliasFieldFilter
-                    return (
-                        alias.categoryId === category.id &&
-                        searchMatches &&
-                        categorySearchMatches &&
-                        usageMatches &&
-                        fieldMatches
-                    )
-                })
+            const categoryAliases = filteredAliases
+                .filter((alias) => alias.categoryId === category.id)
                 .sort((a, b) =>
                     compareAliases(a, b, aliasSort, rules?.aliasUsage ?? {})
                 )
@@ -514,21 +515,8 @@
                 ),
             }
         })
-        .filter((group) => group.total > 0 || !search.trim())
-    $: aliasResultCount = aliases.filter((alias) => {
-        const usage = rules?.aliasUsage?.[alias.id] ?? 0
-        return (
-            (aliasCategoryFilter === 'all' ||
-                alias.categoryId === aliasCategoryFilter) &&
-            (aliasUsageFilter === 'all' ||
-                (aliasUsageFilter === 'used' ? usage > 0 : usage === 0)) &&
-            (aliasFieldFilter === 'all' || alias.field === aliasFieldFilter) &&
-            (!search.trim() ||
-                alias.value
-                    .toLocaleLowerCase()
-                    .includes(search.trim().toLocaleLowerCase()))
-        )
-    }).length
+        .filter((group) => group.total > 0 || !hasAliasFilters)
+    $: aliasResultCount = filteredAliases.length
     $: statementTypes = [
         ...new Set(
             (rules?.statements ?? [])
@@ -667,7 +655,6 @@
     }
 
     async function refreshRules() {
-        rules = await api.getRules(selectedLedgerId.trim())
         await refresh()
     }
 
@@ -805,10 +792,7 @@
         const observationIds =
             recurringSettings.observationIds[id] ??
             occurrences.map((occurrence) => occurrence.statementId)
-        const typicalAmount = members.reduce(
-            (total, series) => total + series.amountModel.typicalAmount,
-            0
-        )
+        const amountModel = mergedAmountModel(members)
         const reviewStatus = members.every(
             (series) => series.reviewStatus === 'confirmed'
         )
@@ -828,19 +812,20 @@
                 members.length > 1
                     ? `${base.counterparty} + ${members.length - 1} more`
                     : base.counterparty,
+            category: members.every((series) => series.category === base.category)
+                ? base.category
+                : undefined,
+            necessity: members.every((series) => series.category === base.category)
+                ? base.necessity
+                : undefined,
+            control: members.every((series) => series.category === base.category)
+                ? base.control
+                : undefined,
             occurrences: observationsAsOccurrences(members, observationIds),
             reviewStatus,
             amountModel: {
                 ...base.amountModel,
-                typicalAmount,
-                minimumAmount: members.reduce(
-                    (total, series) => total + series.amountModel.minimumAmount,
-                    0
-                ),
-                maximumAmount: members.reduce(
-                    (total, series) => total + series.amountModel.maximumAmount,
-                    0
-                ),
+                ...amountModel,
             },
             evidence: {
                 ...base.evidence,
@@ -850,6 +835,125 @@
             members,
             observationIds,
         }
+    }
+
+    function mergedAmountModel(members: RecurringSeries[]) {
+        const parent = members.map((_, index) => index)
+        const find = (index: number): number => {
+            if (parent[index] !== index) parent[index] = find(parent[index])
+            return parent[index]
+        }
+        const join = (left: number, right: number) => {
+            const leftRoot = find(left)
+            const rightRoot = find(right)
+            if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot
+        }
+
+        for (let left = 0; left < members.length; left += 1) {
+            for (let right = left + 1; right < members.length; right += 1) {
+                if (sameRecurringSchedule(members[left], members[right])) {
+                    join(left, right)
+                }
+            }
+        }
+
+        const components = new Map<number, RecurringSeries[]>()
+        members.forEach((member, index) => {
+            const root = find(index)
+            components.set(root, [...(components.get(root) ?? []), member])
+        })
+
+        const componentModels = [...components.values()].map((component) => {
+            if (component.length === 1) return component[0].amountModel
+            const occurrences = component
+                .flatMap((series) => series.occurrences)
+                .sort((a, b) => a.date.localeCompare(b.date))
+            const clusters: typeof occurrences[] = []
+            for (const occurrence of occurrences) {
+                const cluster = clusters.at(-1)
+                const previous = cluster?.at(-1)
+                const daysApart = previous
+                    ? Math.abs(
+                          (new Date(`${occurrence.date}T00:00:00`).getTime() -
+                              new Date(`${previous.date}T00:00:00`).getTime()) /
+                              86_400_000
+                      )
+                    : Number.POSITIVE_INFINITY
+                if (cluster && daysApart <= 7) cluster.push(occurrence)
+                else clusters.push([occurrence])
+            }
+            const representativeAmounts = clusters.map((cluster) =>
+                median(cluster.map((occurrence) => occurrence.amount))
+            )
+            return {
+                typicalAmount: median(representativeAmounts),
+                minimumAmount: Math.min(...representativeAmounts),
+                maximumAmount: Math.max(...representativeAmounts),
+            }
+        })
+
+        return {
+            typicalAmount: representativeMoney(
+                componentModels.reduce((total, model) => total + model.typicalAmount, 0)
+            ),
+            minimumAmount: representativeMoney(
+                componentModels.reduce((total, model) => total + model.minimumAmount, 0)
+            ),
+            maximumAmount: representativeMoney(
+                componentModels.reduce((total, model) => total + model.maximumAmount, 0)
+            ),
+        }
+    }
+
+    function sameRecurringSchedule(left: RecurringSeries, right: RecurringSeries) {
+        if (
+            left.cadence !== right.cadence ||
+            left.direction !== right.direction ||
+            left.currency !== right.currency
+        ) {
+            return false
+        }
+        const rightDates = right.occurrences.map((occurrence) =>
+            new Date(`${occurrence.date}T00:00:00`).getTime()
+        )
+        const leftDates = left.occurrences.map((occurrence) =>
+            new Date(`${occurrence.date}T00:00:00`).getTime()
+        )
+        const matched = new Set<number>()
+        let matches = 0
+        for (const date of leftDates) {
+            let nearestIndex = -1
+            let nearestDistance = 7 * 86_400_000 + 1
+            rightDates.forEach((candidate, index) => {
+                if (matched.has(index)) return
+                const distance = Math.abs(date - candidate)
+                if (distance < nearestDistance) {
+                    nearestDistance = distance
+                    nearestIndex = index
+                }
+            })
+            if (nearestIndex >= 0 && nearestDistance <= 7 * 86_400_000) {
+                matched.add(nearestIndex)
+                matches += 1
+            }
+        }
+        const requiredMatches = Math.max(
+            2,
+            Math.ceil(Math.min(leftDates.length, rightDates.length) * 0.5)
+        )
+        return matches >= requiredMatches
+    }
+
+    function median(values: number[]) {
+        const sorted = [...values].sort((a, b) => a - b)
+        const middle = Math.floor(sorted.length / 2)
+        return sorted.length % 2
+            ? sorted[middle]
+            : (sorted[middle - 1] + sorted[middle]) / 2
+    }
+
+    function representativeMoney(value: number) {
+        return Math.round(value * 100) / 100
     }
 
     function recurringObservationIds(row: RecurringRow) {
@@ -1069,6 +1173,16 @@
         }).format(new Date(`${value}T00:00:00`))
     }
 
+    function aliasCreatedLabel(value?: string) {
+        if (!value) return 'Created date unavailable'
+        const date = new Date(value)
+        if (Number.isNaN(date.getTime())) return 'Created date unavailable'
+        return `Created ${new Intl.DateTimeFormat(undefined, {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+        }).format(date)}`
+    }
+
     function isDateKey(value: string) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
         const [year, month, day] = value.split('-').map(Number)
@@ -1264,17 +1378,29 @@
         if (!newLedgerName.trim()) { error = 'Enter a name for this account ledger.'; return }
         saving = true
         try {
-            const created = await api.createLedger(newLedgerName.trim(), selectedLegacyFiles, importProfile || undefined)
+            const created = await api.createLedger(newLedgerName.trim(), selectedLegacyFiles, importProfile || undefined, newLedgerRulesTemplate)
             const state = await api.getLedgers()
             ledgers = state.ledgers
             unassignedFiles = state.unassignedFiles
             selectedLedgerId = created.id
             newLedgerName = ''
             selectedLegacyFiles = []
+            newLedgerRulesTemplate = 'generic'
             creatingLedger = false
             await refresh()
         } catch (cause) {
             error = cause instanceof Error ? cause.message : 'Could not create the account ledger.'
+        } finally { saving = false }
+    }
+
+    async function applyGenericRulesTemplate() {
+        if (!selectedLedgerId) return
+        saving = true
+        try {
+            await api.applyGenericRulesTemplate(selectedLedgerId)
+            await refreshRules()
+        } catch (cause) {
+            error = cause instanceof Error ? cause.message : 'Could not apply the generic category template.'
         } finally { saving = false }
     }
 
@@ -1366,15 +1492,25 @@
 
     async function removeAlias(id: string) {
         if (!confirm('Remove this alias?')) return
-        await api.deleteAlias(selectedLedgerId, id)
-        await refreshRules()
+        saving = true
+        error = ''
+        try {
+            await api.deleteAlias(selectedLedgerId, id)
+            await refreshRules()
+        } catch (cause) {
+            error = cause instanceof Error
+                ? cause.message
+                : 'Could not remove the alias.'
+        } finally {
+            saving = false
+        }
     }
 
     async function addCategory() {
         if (!newCategory.name.trim()) return
         saving = true
         try {
-            await api.createCategory(newCategory)
+            await api.createCategory(selectedLedgerId, newCategory)
             newCategory = { name: '', necessity: 'necessity' }
             await refreshRules()
         } catch (cause) {
@@ -1390,7 +1526,7 @@
     async function updateCategory(category: Category) {
         saving = true
         try {
-            await api.updateCategory(category.id, category)
+            await api.updateCategory(selectedLedgerId, category.id, category)
             editingCategoryId = ''
             await refreshRules()
         } catch (cause) {
@@ -1406,7 +1542,7 @@
     async function removeCategory(category: Category) {
         if (category.aliasCount || !confirm(`Delete ${category.name}?`)) return
         try {
-            await api.deleteCategory(category.id)
+            await api.deleteCategory(selectedLedgerId, category.id)
             await refreshRules()
         } catch (cause) {
             error =
@@ -1775,6 +1911,10 @@
                     <select class="rounded-lg border bg-white p-2 text-sm" bind:value={importProfile} aria-label="Import profile for this ledger">
                         <option value="">Automatic headers / no profile</option>
                         {#each importProfiles as profile}<option value={profile.name}>{profile.name}</option>{/each}
+                    </select>
+                    <select class="rounded-lg border bg-white p-2 text-sm" bind:value={newLedgerRulesTemplate} aria-label="Starting finance rules">
+                        <option value="generic">Generic starter categories</option>
+                        <option value="scratch">Start from scratch</option>
                     </select>
                     <Button onclick={createLedger} disabled={saving || !newLedgerName.trim()}><Plus size={15} />Create ledger</Button>
                 </div>
@@ -3491,15 +3631,15 @@
                                     >{filter[1]}
                                     <span
                                         >{filter[0] === 'all'
-                                            ? aliases.length
+                                            ? eligibleAliases.length
                                             : filter[0] === 'used'
-                                              ? aliases.filter(
+                                              ? eligibleAliases.filter(
                                                     (alias) =>
                                                         (rules?.aliasUsage?.[
                                                             alias.id
                                                         ] ?? 0) > 0
                                                 ).length
-                                              : aliases.filter(
+                                              : eligibleAliases.filter(
                                                     (alias) =>
                                                         (rules?.aliasUsage?.[
                                                             alias.id
@@ -3555,7 +3695,7 @@
                         class="mt-3 flex items-center justify-between text-xs text-slate-500"
                     >
                         <span
-                            >Showing {aliasResultCount} of {aliases.length} aliases</span
+                            >Showing {aliasResultCount} of {eligibleAliases.length} matching aliases</span
                         ><span
                             >{aliasSort === 'usage-desc'
                                 ? 'High-impact rules first'
@@ -3683,10 +3823,10 @@
                                             ><span
                                                 class="min-w-0 truncate font-semibold"
                                                 >“{alias.value}”</span
-                                            ><span class="alias-chip-meta"
-                                                >{rules?.aliasUsage?.[
+                                            ><span class="alias-chip-meta flex flex-col items-end"
+                                                ><span>{rules?.aliasUsage?.[
                                                     alias.id
-                                                ] ?? 0} matches</span
+                                                ] ?? 0} matches</span><span>{aliasCreatedLabel(alias.createdAt)}</span></span
                                             ></button
                                         >
                                         <button
@@ -4191,6 +4331,15 @@
             </section>
         {:else if page === 'categories'}
             <section class="space-y-5 animate-float-in">
+                {#if rules && categories.length === 0 && aliases.length === 0}
+                    <Card className="flex flex-wrap items-center justify-between gap-3 border-indigo-200 bg-indigo-50/70 p-5">
+                        <div>
+                            <h3 class="font-semibold text-slate-900">Start with a generic category set?</h3>
+                            <p class="mt-1 text-sm text-slate-600">Adds common household categories to this ledger. You can rename or remove them later.</p>
+                        </div>
+                        <Button size="sm" onclick={applyGenericRulesTemplate} disabled={saving}>Use generic categories</Button>
+                    </Card>
+                {/if}
                 <div>
                     <Badge tone="success">Taxonomy · {categories.length}</Badge>
                     <h2 class="mt-2 page-title">

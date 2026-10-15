@@ -70,8 +70,12 @@ export class FinanceApi implements FinanceGateway {
         return this.get('/finance/ledgers')
     }
 
-    async createLedger(name: string, files: string[], importProfile?: string): Promise<LedgerInfo> {
-        return this.send('/finance/ledgers', 'POST', { name, files, importProfile })
+    async createLedger(name: string, files: string[], importProfile?: string, rulesTemplate: 'generic' | 'scratch' = 'scratch'): Promise<LedgerInfo> {
+        return this.send('/finance/ledgers', 'POST', { name, files, importProfile, rulesTemplate })
+    }
+
+    async applyGenericRulesTemplate(ledgerId: string) {
+        return this.send(`/finance/ledgers/${encodeURIComponent(ledgerId)}/rules/template`, 'POST')
     }
 
     async uploadStatement(file: File, columnMappings: Record<string, string>, ledgerId: string): Promise<{ ledgerId: string; sourceId: string }> {
@@ -106,16 +110,16 @@ export class FinanceApi implements FinanceGateway {
         return this.get(`/finance/rules/${encodeURIComponent(ledgerId)}`)
     }
 
-    async createCategory(body: { name: string; necessity: 'necessity' | 'convenience' }) {
-        return this.send('/finance/categories', 'POST', body)
+    async createCategory(ledgerId: string, body: { name: string; necessity: 'necessity' | 'convenience' }) {
+        return this.send(`/finance/ledgers/${encodeURIComponent(ledgerId)}/categories`, 'POST', body)
     }
 
-    async updateCategory(id: string, body: { name: string; necessity: 'necessity' | 'convenience' }) {
-        return this.send(`/finance/categories/${encodeURIComponent(id)}`, 'PUT', body)
+    async updateCategory(ledgerId: string, id: string, body: { name: string; necessity: 'necessity' | 'convenience' }) {
+        return this.send(`/finance/ledgers/${encodeURIComponent(ledgerId)}/categories/${encodeURIComponent(id)}`, 'PUT', body)
     }
 
-    async deleteCategory(id: string) {
-        return this.send(`/finance/categories/${encodeURIComponent(id)}`, 'DELETE')
+    async deleteCategory(ledgerId: string, id: string) {
+        return this.send(`/finance/ledgers/${encodeURIComponent(ledgerId)}/categories/${encodeURIComponent(id)}`, 'DELETE')
     }
 
     async createAlias(ledgerId: string, body: Record<string, unknown>) {
@@ -131,7 +135,7 @@ export class FinanceApi implements FinanceGateway {
     }
 
     private async get<T>(path: string): Promise<T> {
-        const response = await fetch(`${this.baseUrl}${path}`)
+        const response = await fetch(`${this.baseUrl}${path}`, { cache: 'no-store' })
         if (!response.ok) {
             throw new Error(`Request failed (${response.status}) for ${path}`)
         }

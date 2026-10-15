@@ -29,10 +29,16 @@ export class FinanceService {
         return this.ruleStore.saveImportProfile(name, mappings)
     }
 
-    createLedger(name: string, files: string[], importProfile?: string) {
+    createLedger(name: string, files: string[], importProfile?: string, rulesTemplate: 'generic' | 'scratch' = 'scratch') {
         const manifest = this.ledgerStore.create(name, files, importProfile, this.getImportProfiles())
-        this.ruleStore.initializeLedger(manifest.id, manifest.sources.map((source) => source.legacyFileName).filter((value): value is string => Boolean(value)), importProfile)
+        this.ruleStore.initializeLedger(manifest.id)
+        if (rulesTemplate === 'generic') this.ruleStore.applyGenericTemplate(manifest.id)
         return manifest
+    }
+
+    applyGenericRulesTemplate(ledgerId: string) {
+        this.ledgerStore.get(ledgerId)
+        return this.ruleStore.applyGenericTemplate(ledgerId)
     }
 
     addUploadedFile(ledgerId: string, temporaryPath: string, originalName: string, mappings: Record<string, string>) {
@@ -163,9 +169,9 @@ export class FinanceService {
 
     setRecurringDecision(ledgerId: string, seriesId: string, decision: Parameters<RuleStoreService['setRecurringDecision']>[2]) { return this.ruleStore.setRecurringDecision(ledgerId, seriesId, decision) }
     setManualRecurring(ledgerId: string, statement: string, direction: Parameters<RuleStoreService['setManualRecurring']>[2]) { return this.ruleStore.setManualRecurring(ledgerId, statement, direction) }
-    createCategory(name: string, necessity: 'necessity' | 'convenience') { return this.ruleStore.createCategory(name, necessity) }
-    updateCategory(id: string, name: string, necessity: 'necessity' | 'convenience') { return this.ruleStore.updateCategory(id, name, necessity) }
-    deleteCategory(id: string) { return this.ruleStore.deleteCategory(id) }
+    createCategory(ledgerId: string, name: string, necessity: 'necessity' | 'convenience') { return this.ruleStore.createCategory(ledgerId, name, necessity) }
+    updateCategory(ledgerId: string, id: string, name: string, necessity: 'necessity' | 'convenience') { return this.ruleStore.updateCategory(ledgerId, id, name, necessity) }
+    deleteCategory(ledgerId: string, id: string) { return this.ruleStore.deleteCategory(ledgerId, id) }
     createAlias(ledgerId: string, alias: Parameters<RuleStoreService['createAlias']>[1]) { return this.ruleStore.createAlias(ledgerId, alias) }
     updateAlias(ledgerId: string, id: string, patch: Parameters<RuleStoreService['updateAlias']>[2]) { return this.ruleStore.updateAlias(ledgerId, id, patch) }
     deleteAlias(ledgerId: string, id: string) { return this.ruleStore.deleteAlias(ledgerId, id) }

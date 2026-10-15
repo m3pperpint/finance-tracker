@@ -9,6 +9,7 @@ export interface ManagedCategory {
 
 export interface AliasRule {
     id: string
+    createdAt?: string
     value: string
     categoryId: string
     field: 'any' | 'text' | 'transaction_type' | 'category'

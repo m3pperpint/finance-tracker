@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "Generic household categories",
+  "categories": [
+    { "id": "housing", "name": "Housing", "necessity": "necessity", "description": "Rent, mortgage, and housing costs." },
+    { "id": "utilities", "name": "Utilities", "necessity": "necessity", "description": "Electricity, heating, water, and household services." },
+    { "id": "groceries", "name": "Groceries", "necessity": "necessity", "description": "Food and everyday household supplies." },
+    { "id": "transport", "name": "Transport", "necessity": "necessity", "description": "Public transport, fuel, and essential travel." },
+    { "id": "insurance", "name": "Insurance", "necessity": "necessity", "description": "Insurance premiums and related costs." },
+    { "id": "health", "name": "Health", "necessity": "necessity", "description": "Healthcare, medicine, and wellbeing costs." },
+    { "id": "communications", "name": "Communications", "necessity": "necessity", "description": "Phone, internet, and communication services." },
+    { "id": "dining", "name": "Dining & takeaways", "necessity": "convenience", "description": "Restaurants, cafés, and takeaway meals." },
+    { "id": "subscriptions", "name": "Subscriptions", "necessity": "convenience", "description": "Streaming, memberships, and recurring digital services." },
+    { "id": "shopping", "name": "Shopping", "necessity": "convenience", "description": "Clothing, personal purchases, and non-essential goods." },
+    { "id": "leisure", "name": "Leisure & entertainment", "necessity": "convenience", "description": "Hobbies, entertainment, and leisure activities." },
+    { "id": "travel", "name": "Travel", "necessity": "convenience", "description": "Holidays and non-essential travel." }
+  ]
+}
