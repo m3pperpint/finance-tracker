@@ -74,17 +74,14 @@ npm run start:prod
 
 The dashboard works with account ledgers. A ledger combines one or more statement CSVs belonging to the same account or person and has its own category aliases and recurring-payment decisions. When there is one ledger, it opens automatically; otherwise choose one from the selector.
 
-The dashboard has two clearly separated areas:
-
-- **Selected view**: the chosen month, year, or all-time scope. Its cards, transaction types, all spending categories, weekdays, and highest weekday all use the same scope.
-- **Overall - independent**: complete-history trends. These do not change when the selected view changes. Their own Monthly trend / Yearly trend toggle controls the chart grain.
+The overview combines period totals with category-level spending analysis. The selected month, year, custom range, or all-time scope drives the totals, category list, category trend, usual baseline, and merchant breakdown. Selecting a category updates the analysis beside the list instead of opening a separate spending page. Upcoming recurring payments and statement-review status remain visible in a shared section below; upcoming payments always refer to the current month and are estimates.
 
 In the timeframe control:
 
-- **Month** starts at the latest month available in the file. Use the left/right arrows to move one month at a time. Click the month label to open the browser month picker; only months in the file's available range are selectable.
-- **Year** uses the same arrows to move between available years. Click the year label to choose another available year.
+- **Month** starts at the latest month available in the file. Use the left/right arrows to move between available months, or select a month from the list.
+- **Year** uses the same arrows to move between available years, or select a year from the list.
+- **Custom** accepts a start and end date. Its arrows shift the full range by the same number of days; an optional previous-range comparison appears inline with the selected category.
 - **All time** aggregates the complete file and has no period navigation arrows.
-
 Upload CSVs into an existing ledger to combine them, or create a ledger and select any existing loose CSV files to group together. Uploading previews the headers and lets you map columns to app fields. Amount is needed for spending totals; date enables time scopes; description fields add transaction detail and keyword suggestions. Named import profiles save reusable column mappings. Category aliases and recurring decisions are scoped to the ledger, while category definitions are shared. The dashboard reports the number of combined files and overlapping rows skipped. Refresh reloads the selected ledger.
 
 ## Use a CSV already in the upload folder
@@ -105,7 +102,7 @@ $ledger = Invoke-RestMethod -Method Post -Uri http://localhost:3000/finance/ledg
 curl "http://localhost:3000/finance/dashboard/$($ledger.id)?mode=all&top=5"
 ```
 
-The dashboard endpoint returns the scoped metrics plus every spending category with its definition, total, transaction count, share of total spending, necessity/control profile, and price pattern. It also returns the category catalog and complete-history monthly/yearly evolution used by the Overall section. Negative transactions without a source category are reported as `Uncategorized`, so category shares add up to total spending.
+The dashboard endpoint returns the scoped metrics plus every spending category with its definition, total, transaction count, share of total spending, necessity/control profile, and price pattern. It also returns the category catalog and complete-history monthly/yearly evolution used by the category trend. Negative transactions without a source category are reported as `Uncategorized`, so category shares add up to total spending.
 
 The original calculation endpoints are also available:
 
